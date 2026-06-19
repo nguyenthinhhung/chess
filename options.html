@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Settings - Chess.com to Lichess</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 560px;
+      margin: 40px auto;
+      padding: 0 20px;
+      color: #222;
+      line-height: 1.5;
+    }
+    h1 { font-size: 20px; margin-bottom: 4px; }
+    .sub { color: #666; margin-bottom: 24px; font-size: 14px; }
+    label { display: block; font-weight: 500; margin: 16px 0 6px; font-size: 14px; }
+    input[type="text"],
+    input[type="password"] {
+      width: 100%;
+      padding: 9px 11px;
+      box-sizing: border-box;
+      font-family: 'SF Mono', Consolas, monospace;
+      font-size: 13px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    input[type="text"]:focus,
+    input[type="password"]:focus { outline: none; border-color: #759900; }
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 10px 0 0;
+      font-weight: normal;
+      font-size: 14px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .checkbox-row input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      margin: 0;
+      flex-shrink: 0;
+      accent-color: #759900;
+      cursor: pointer;
+    }
+    button {
+      padding: 9px 20px;
+      background: #759900;
+      color: white;
+      border: 0;
+      cursor: pointer;
+      border-radius: 4px;
+      font-size: 14px;
+      font-weight: 500;
+      margin-top: 12px;
+    }
+    button:hover { background: #5d7d00; }
+    .hint { color: #666; font-size: 13px; margin: 6px 0 0; }
+    .hint a { color: #759900; }
+    #saved { color: #759900; font-weight: 600; margin-left: 12px; font-size: 13px; }
+    .steps { background: #fafafa; padding: 16px 20px; border-radius: 6px; border: 1px solid #eee; margin-top: 24px; font-size: 13px; }
+    .steps ol { margin: 6px 0; padding-left: 22px; }
+    .steps code { background: #eee; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>Lichess API Token</h1>
+  <p class="sub">Required for importing games to your Lichess account.</p>
+
+  <label for="token">Personal access token</label>
+  <input id="token" type="password" placeholder="Paste your Lichess token (starts with lip_)" autocomplete="off">
+  <p class="hint">
+    Create one at
+    <a href="https://lichess.org/account/oauth/token/create?description=Chess.com+Analyzer" target="_blank">
+      lichess.org/account/oauth/token/create
+    </a>
+    &mdash; no scopes need to be selected, just give it a name and submit.
+  </p>
+
+  <div>
+    <button id="save">Save</button>
+    <span id="saved"></span>
+  </div>
+
+  <div class="steps">
+    <strong>How to use:</strong>
+    <ol>
+      <li>Save your token above.</li>
+      <li>Open any chess.com game page — an <em>Analyze on Lichess</em> button appears.</li>
+      <li>Or click the extension icon to batch-import your last N games.</li>
+    </ol>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

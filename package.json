@@ -1,0 +1,10 @@
+{
+  "name": "chesscom-to-lichess-analyzer",
+  "version": "0.3.0",
+  "description": "Chrome extension that imports chess.com games into Lichess for unlimited Stockfish analysis.",
+  "private": true,
+  "scripts": {
+    "test": "node --test"
+  },
+  "license": "MIT"
+}

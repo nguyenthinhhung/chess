@@ -1,0 +1,47 @@
+.lichess-analyzer-fab {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2147483647;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  background: #759900;
+  color: #fff;
+  border: 0;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 12px;
+  font-family: inherit;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.24), 0 1px 3px rgba(0, 0, 0, 0.16);
+  transition: background 0.15s, transform 0.15s, box-shadow 0.15s;
+}
+
+.lichess-analyzer-fab:hover:not(:disabled) {
+  background: #5d7d00;
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.32), 0 3px 6px rgba(0, 0, 0, 0.2);
+}
+
+.lichess-analyzer-fab:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.28);
+}
+
+.lichess-analyzer-fab:disabled {
+  opacity: 0.75;
+  cursor: wait;
+}
+
+.lichess-analyzer-fab__icon {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+
+.lichess-analyzer-fab__label {
+  white-space: nowrap;
+}

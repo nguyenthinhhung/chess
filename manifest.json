@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Chess.com to Lichess Analyzer",
+  "version": "0.3.0",
+  "description": "One-click import of chess.com games into Lichess for unlimited Stockfish analysis.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://*.chess.com/*",
+    "https://lichess.org/*",
+    "https://api.chess.com/*"
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.chess.com/*"],
+      "js": ["pgn.js", "content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Analyze on Lichess",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_page": "options.html"
+}
