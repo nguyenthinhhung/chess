@@ -93,6 +93,7 @@ function createButton() {
   const labelEl = btn.querySelector('.lichess-analyzer-fab__label');
   const setLabelText = (text, disabled = false) => {
     labelEl.textContent = text;
+    btn.title = text; // icon-only button: surface status via the tooltip
     btn.disabled = disabled;
   };
   const resetLabel = () => setLabelText('Analyze on Lichess', false);
