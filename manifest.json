@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Chess.com to Lichess Analyzer",
-  "version": "0.3.0",
-  "description": "One-click import of chess.com games into Lichess for unlimited Stockfish analysis.",
+  "version": "0.4.0",
+  "description": "Import chess.com games into Lichess for analysis, plus an opening coach for the Italian and Caro-Kann.",
   "permissions": ["storage"],
   "host_permissions": [
     "https://*.chess.com/*",
@@ -20,8 +20,14 @@
   "content_scripts": [
     {
       "matches": ["https://*.chess.com/*"],
-      "js": ["pgn.js", "content.js"],
+      "js": ["pgn.js", "chesscore.js", "repertoire.js", "coach.js", "content.js", "coach-ui.js"],
       "css": ["styles.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://*.chess.com/*"],
+      "js": ["coach-bridge.js"],
+      "world": "MAIN",
       "run_at": "document_idle"
     }
   ],
