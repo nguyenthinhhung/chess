@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Chess.com to Lichess Analyzer",
-  "version": "0.3.0",
-  "description": "One-click import of chess.com games into Lichess for unlimited Stockfish analysis.",
-  "permissions": ["storage"],
+  "version": "0.4.0",
+  "description": "Import chess.com games into Lichess for analysis, plus an in-game Stockfish coach with opening recognition (vs bots and on the analysis board).",
+  "permissions": ["storage", "offscreen"],
   "host_permissions": [
     "https://*.chess.com/*",
     "https://lichess.org/*",
@@ -20,9 +20,28 @@
   "content_scripts": [
     {
       "matches": ["https://*.chess.com/*"],
-      "js": ["pgn.js", "content.js"],
+      "js": ["pgn.js", "chesscore.js", "explain.js", "content.js", "chess-coach.js"],
       "css": ["styles.css"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://*.chess.com/*"],
+      "js": ["chess-coach-bridge.js"],
+      "world": "MAIN",
+      "run_at": "document_idle"
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "vendor/stockfish-18-lite-single.js",
+        "vendor/stockfish-18-lite-single.wasm",
+        "openings.json"
+      ],
+      "matches": ["https://*.chess.com/*"]
     }
   ],
   "action": {

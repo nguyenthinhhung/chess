@@ -54,3 +54,186 @@
   white-space: nowrap;
   border: 0;
 }
+
+/* ===========================================================================
+   Chess Coach — under-board control bar (bot & analysis surfaces).
+   The bar is fixed and re-anchored under the board on every render. Board
+   arrows are an inline SVG injected into the board element, not styled here.
+   =========================================================================== */
+.chess-coach-bar {
+  position: fixed;
+  z-index: 2147483640;
+  box-sizing: border-box;
+  /* No box of its own — it only holds the round lightbulb button, which carries
+     its own background. The opening name now lives in the panel header. */
+  background: none;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+}
+
+.chess-coach-bar * { box-sizing: border-box; }
+
+.cc-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.cc-line--wrap { white-space: normal; }
+
+.cc-sep {
+  width: 1px;
+  align-self: stretch;
+  background: rgba(255, 255, 255, 0.12);
+  margin: 2px 1px;
+}
+
+.cc-bulb {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: #1f1e1c;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  filter: grayscale(1) brightness(0.7);
+  transition: filter 0.15s, box-shadow 0.15s, border-color 0.15s;
+}
+.cc-bulb:hover { border-color: rgba(255, 255, 255, 0.35); }
+.cc-bulb--on {
+  filter: none;
+  border-color: #b58a00;
+  box-shadow: 0 0 10px rgba(240, 200, 60, 0.5);
+}
+
+.cc-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cc-select {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 170px;
+  background: #1f1e1c;
+  color: #e8e6e3;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 3px 5px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.cc-select:focus { outline: none; border-color: #5c7a1e; }
+
+.cc-depth {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: #bdbbb7;
+}
+.cc-depth output { font-weight: 700; color: #e8e6e3; min-width: 1.4em; text-align: right; }
+.cc-depth input[type="range"] { width: 84px; cursor: pointer; accent-color: #759900; }
+
+/* Inline result chips. */
+.cc-chip {
+  flex: 0 0 auto;
+  font-size: 12px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+}
+.cc-chip b { font-weight: 700; }
+.cc-good { color: #b6d36b; background: rgba(118, 153, 0, 0.16); }
+.cc-info { color: #7fb2d6; }
+.cc-book { color: #d6bdf2; background: rgba(142, 68, 173, 0.22); }
+.cc-alts { color: #bdbbb7; }
+.cc-opp { color: #e89089; background: rgba(208, 70, 59, 0.16); }
+
+/* ===========================================================================
+   Chess Coach — settings + results panel, fixed at the screen's bottom-right.
+   Minimizable; sits above the Lichess analyze button.
+   =========================================================================== */
+.chess-coach-panel {
+  position: fixed;
+  right: 16px;
+  bottom: 72px;
+  z-index: 2147483640;
+  box-sizing: border-box;
+  width: 252px;
+  max-width: calc(100vw - 32px);
+  max-height: 70vh;
+  overflow-y: auto;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #e8e6e3;
+  background: rgba(38, 38, 36, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  font-size: 12.5px;
+}
+.chess-coach-panel * { box-sizing: border-box; }
+.chess-coach-panel.is-min { width: auto; }
+
+.cc-phead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px 10px 0 0;
+}
+.chess-coach-panel.is-min .cc-phead { border-bottom: none; border-radius: 10px; }
+/* Short, single line like the dropdown — the full name is in the title tooltip. */
+.cc-ptitle { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cc-pbtn {
+  flex-shrink: 0;
+  min-width: 24px;
+  height: 22px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #cfcdc9;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+.cc-pbtn:hover { background: rgba(255, 255, 255, 0.08); }
+
+.cc-pbody { padding: 9px 10px; display: flex; flex-direction: column; gap: 9px; }
+.cc-prow { margin: 0; }
+.cc-pbody .cc-select { flex: 1 1 auto; max-width: none; width: 100%; }
+.cc-pbody .cc-depth { font-size: 12px; }
+.cc-pbody .cc-depth input[type="range"] { flex: 1; width: auto; }
+.cc-results { display: flex; flex-wrap: wrap; gap: 6px; }
+.cc-results:empty { display: none; }
+
+.cc-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  font-size: 11px;
+  color: #bdbbb7;
+}
+.cc-lg { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.cc-lg i {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  display: inline-block;
+  box-sizing: border-box;
+}

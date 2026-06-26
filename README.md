@@ -23,19 +23,55 @@ Chrome extension that imports chess.com games into Lichess for unlimited Stockfi
 
 **Manual PGN** — paste any PGN into the popup textarea and import directly.
 
+## Chess Coach
+
+An in-game coach that recognises the opening, guides you along book lines, and
+runs Stockfish to suggest moves throughout the rest of the game. A control bar
+docks **under the board**, anchored by a 💡 lightbulb button that toggles
+coaching on and off.
+
+When coaching is on it draws arrows straight on the board:
+
+- **Top 3 engine moves** for the side to move, coloured by rank — best (green),
+  second (blue), third (amber).
+- **Book move** (violet) while you're inside a known opening.
+  In the opening this is the priority recommendation; the engine arrows are the
+  alternatives.
+- **Opponent's likely reply** (red, dashed) taken from Stockfish's principal
+  variation, so you can read their intention.
+
+The bar also shows the recognised opening name (ECO code + name), the evaluation,
+a short grounded explanation of the best move, and the opponent's expected reply.
+
+**Pick an opening to play** from the dropdown (Auto-detect, or one of ~30 popular
+openings such as the Italian Game, Sicilian, or Queen's Gambit). Choosing one
+guides you along that line move by move. **Set the Stockfish search depth** with
+the slider (6–22; deeper is stronger but slower). All choices are remembered.
+
+Opening names come from `openings.json` — a ~3,700-line ECO database built from
+the open-source [lichess-org/chess-openings](https://github.com/lichess-org/chess-openings)
+dataset, fetched lazily so it never slows down page load.
+
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `manifest.json` | MV3 config |
 | `pgn.js` | Pure TCN→UCI→SAN→PGN conversion (shared with tests) |
+| `chesscore.js` | Minimal chess engine (apply SAN/UCI, FEN) used by the coach |
+| `openings.json` | ECO opening database (UCI line → name), fetched on demand |
+| `explain.js` | Turns an engine eval into a short, grounded explanation |
+| `engine.js` | Stockfish (WASM) worker wrapper — UCI, MultiPV searches |
+| `offscreen.html/js` | Offscreen document that hosts the engine (page-CSP-free) |
 | `content.js` | Button injection + PGN scrape on game pages |
-| `background.js` | Service worker: Lichess API client + rate limiter |
+| `chess-coach.js` | Coach UI: under-board bar, bottom-right panel, board arrows |
+| `chess-coach-bridge.js` | MAIN-world bridge: reads the live move list |
+| `background.js` | Service worker: Lichess client + engine offscreen relay |
 | `popup.html/css/js` | Toolbar popup for batch + paste import |
 | `options.html/js` | Lichess token settings |
-| `styles.css` | Injected button style |
+| `styles.css` | Injected button + coach bar styles |
 | `icons/` | Toolbar icons + `generate.js` to regenerate them |
-| `test/` | Node tests for the PGN converter |
+| `test/` | Node tests for the PGN converter, chess engine, and explainer |
 
 ## Development
 
