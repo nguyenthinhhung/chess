@@ -34,7 +34,7 @@ When coaching is on it draws arrows straight on the board:
 
 - **Top 3 engine moves** for the side to move, coloured by rank — best (green),
   second (blue), third (amber).
-- **Book move** (violet, marked **B** / 📖) while you're inside a known opening.
+- **Book move** (violet) while you're inside a known opening.
   In the opening this is the priority recommendation; the engine arrows are the
   alternatives.
 - **Opponent's likely reply** (red, dashed) taken from Stockfish's principal

@@ -6,9 +6,8 @@
 // the move list straight from the game API (clean SAN, no figurine/DOM
 // scraping), and forwards it to the isolated-world coach via window.postMessage.
 //
-// It only READS and only forwards moves. Whether those moves are turned into
-// live hints is decided by chess-coach.js, which suppresses real-time help in
-// games against humans.
+// It only READS and only forwards moves; chess-coach.js decides what to do with
+// them (it coaches in every game, including live games against humans).
 
 (function () {
   let last = '';

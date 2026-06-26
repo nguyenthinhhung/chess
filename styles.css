@@ -64,16 +64,12 @@
   position: fixed;
   z-index: 2147483640;
   box-sizing: border-box;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  color: #e8e6e3;
-  background: rgba(38, 38, 36, 0.96);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-  padding: 7px 9px;
-  font-size: 12.5px;
-  overflow-y: hidden;
-  overflow-x: auto;
+  /* No box of its own — it only holds the round lightbulb button, which carries
+     its own background. The opening name now lives in the panel header. */
+  background: none;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
 }
 
 .chess-coach-bar * { box-sizing: border-box; }
@@ -95,8 +91,12 @@
 
 .cc-bulb {
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 30px;
   height: 30px;
+  padding: 0;
   border-radius: 50%;
   border: 1px solid rgba(255, 255, 255, 0.15);
   background: #1f1e1c;
@@ -196,7 +196,8 @@
   border-radius: 10px 10px 0 0;
 }
 .chess-coach-panel.is-min .cc-phead { border-bottom: none; border-radius: 10px; }
-.cc-ptitle { flex: 1; font-weight: 600; white-space: nowrap; }
+/* Short, single line like the dropdown — the full name is in the title tooltip. */
+.cc-ptitle { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cc-pbtn {
   flex-shrink: 0;
   min-width: 24px;

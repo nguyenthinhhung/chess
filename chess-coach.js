@@ -75,7 +75,7 @@
   const RANK_COLORS = ['#22ac38', '#2b86d8', '#e0a000']; // green / blue / amber
   const BOOK_COLOR = '#9b59b6';
   const LEGEND = [
-    { color: BOOK_COLOR, label: '📖 Book' },
+    { color: BOOK_COLOR, label: 'Book' },
     { color: RANK_COLORS[0], label: 'Best' },
     { color: RANK_COLORS[1], label: '2nd' },
     { color: RANK_COLORS[2], label: '3rd' }
@@ -127,9 +127,13 @@
     const p = location.pathname;
     if (p.startsWith('/analysis')) return 'analysis';
     if (/\/play\/(computer|bots)/.test(p) || /\/game\/computer/.test(p)) return 'bot';
-    if (/\/game\/(live|daily)\//.test(p) || p.startsWith('/play/') || p.startsWith('/live')) {
+    if (/\/game\/(live|daily)/.test(p) || p.startsWith('/play') || p.startsWith('/live')) {
       return 'live-human';
     }
+    // Fallback: chess.com's live-game URL shifts once matchmaking completes
+    // (e.g. the SPA leaves /play/online/new), so any other page that actually
+    // has a board is treated as a human game rather than dropped to 'other'.
+    if (findBoard()) return 'live-human';
     return 'other';
   }
 
@@ -340,7 +344,11 @@
         engineState.status = 'done';
       }
     } catch (e) {
-      console.error('[chess-coach] analysis failed:', e);
+      // DOMException doesn't subclass Error, so logging it bare prints the
+      // useless "[object DOMException]"; pull its name/message out explicitly.
+      const detail = e && (e.name || e.message)
+        ? [e.name, e.message].filter(Boolean).join(': ') : String(e);
+      console.error('[chess-coach] analysis failed:', detail, e);
       if (engineState.sig === sig) engineState.status = 'error';
       if (++engineFailures >= 3) {
         engineDead = true;
@@ -365,21 +373,27 @@
 
   // Render-ready arrows. Each carries a resolved colour (by side + rank) so the
   // drawer stays dumb. z-order: book first, then candidates, reply last.
-  //   { uci, color, badge }
+  //   { uci, color, dim? }
   function computeArrows(uci, haveEngine) {
     const arrows = [];
     const opening = detectOpening(uci);
     const bm = bookMove(uci, opening);
-    if (bm) arrows.push({ uci: bm, color: BOOK_COLOR, badge: 'B' });
+    if (bm) arrows.push({ uci: bm, color: BOOK_COLOR });
 
     if (haveEngine) {
       const res = engineState.result;
       const rank = (i) => RANK_COLORS[Math.min(i, RANK_COLORS.length - 1)];
-      // Candidate moves for whoever is to move (solid).
-      res.lines.slice(0, state.arrows).forEach((ln, i) => {
-        if (!ln.move || (bm && ln.move === bm)) return;
-        arrows.push({ uci: ln.move, color: rank(i) });
-      });
+      // Candidate moves for whoever is to move (solid). A shown book arrow takes
+      // one of the configured slots, so we draw one fewer engine move to keep the
+      // total at `state.arrows`.
+      const budget = state.arrows - (bm ? 1 : 0);
+      let n = 0;
+      for (const ln of res.lines) {
+        if (n >= budget) break;
+        if (!ln.move || (bm && ln.move === bm)) continue;
+        arrows.push({ uci: ln.move, color: rank(n) });
+        n++;
+      }
       // The other side's top replies after the best move (dimmer, since they are
       // one ply hypothetical). Same rank palette — the board shows whose move it is.
       (res.replyLines || []).slice(0, state.arrows).forEach((ln, i) => {
@@ -391,12 +405,13 @@
   }
 
   // A smooth Lichess-style arrow as a single polygon (tapered shaft + head),
-  // expressed in board-square units. half-widths: shaft 0.075, head 0.20.
+  // expressed in board-square units. Kept slim so it obscures the squares as
+  // little as possible.
   function arrowPolygon(A, B) {
     const dx = B.x - A.x, dy = B.y - A.y, len = Math.hypot(dx, dy) || 1;
     const ux = dx / len, uy = dy / len;     // direction
     const px = -uy, py = ux;                 // perpendicular
-    const startGap = 0.12, tipGap = 0.04, headL = 0.26, shaftW = 0.045, headW = 0.135;
+    const startGap = 0.12, tipGap = 0.04, headL = 0.22, shaftW = 0.03, headW = 0.1;
     const S = { x: A.x + ux * startGap, y: A.y + uy * startGap };
     const T = { x: B.x - ux * tipGap, y: B.y - uy * tipGap };
     const H = { x: T.x - ux * headL, y: T.y - uy * headL };
@@ -431,23 +446,18 @@
       board.appendChild(svg);
     }
 
-    let shapes = '', badges = '';
+    let shapes = '';
     for (const a of list) {
       const ff = a.uci.charCodeAt(0) - 97, fr = +a.uci[1];
       const tf = a.uci.charCodeAt(2) - 97, tr = +a.uci[3];
       if (ff < 0 || ff > 7 || tf < 0 || tf > 7 || !(fr >= 1 && fr <= 8) || !(tr >= 1 && tr <= 8)) continue;
       const A = squareCentre(ff, fr, flipped), B = squareCentre(tf, tr, flipped);
       const poly = arrowPolygon(A, B);
-      const op = a.dim ? 0.5 : 0.82;
+      const op = a.dim ? 0.38 : 0.62;
       shapes += `<polygon points="${poly}" fill="${a.color}" stroke="${a.color}" ` +
         `stroke-width="0.02" stroke-linejoin="round" opacity="${op}"></polygon>`;
-      if (a.badge) {
-        badges += `<circle cx="${B.x}" cy="${B.y}" r="0.3" fill="${a.color}" stroke="#fff" stroke-width="0.05"></circle>` +
-          `<text x="${B.x}" y="${B.y}" text-anchor="middle" dominant-baseline="central" ` +
-          `font-size="0.4" font-weight="700" fill="#fff">${a.badge}</text>`;
-      }
     }
-    svg.innerHTML = shapes + badges; // badges on top
+    svg.innerHTML = shapes;
   }
 
   // ---- bar (UI under the board) ----------------------------------------------
@@ -478,25 +488,17 @@
     lastSig = '';
   }
 
-  // Anchor the bar to the board's bottom-RIGHT corner. The strip under the board
-  // is only ~50px tall and its left side holds the player name, so we right-align
-  // a narrow panel (and collapse to just the bulb when coaching is off) to avoid
-  // covering the name. Returns false if there is no usable board.
+  // Anchor the bulb near the board's bottom-RIGHT corner, nudged left/down so it
+  // clears the clock that sits in the bottom strip. Returns false if there is no
+  // usable board.
   function positionBar(el) {
     const board = findBoard();
     if (!board) return false;
     const r = board.getBoundingClientRect();
     if (r.width < 60) return false;
-    // Single-line layout: size to content (white-space:nowrap) but never wider
-    // than the board, growing leftward from the board's right edge so the
-    // bottom-left player name stays clear.
     el.style.left = 'auto';
-    el.style.right = Math.max(4, Math.round(window.innerWidth - r.right)) + 'px';
-    el.style.width = 'auto';
-    el.style.maxWidth = Math.round(r.width) + 'px';
-    const top = Math.round(r.bottom + 4);
-    el.style.top = top + 'px';
-    el.style.maxHeight = Math.max(120, Math.round(window.innerHeight - top - 8)) + 'px';
+    el.style.right = Math.max(4, Math.round(window.innerWidth - r.right) + 150) + 'px';
+    el.style.top = Math.round(r.bottom + 4 + 10) + 'px';
     return true;
   }
 
@@ -523,7 +525,7 @@
     const bm = bookMove(uci, opening);
     if (bm) {
       const san = Explain.sanOf(replayMoves(uci), bm);
-      chips += `<span class="cc-chip cc-book">📖 ${esc(san)}</span>`;
+      chips += `<span class="cc-chip cc-book">${esc(san)}</span>`;
     }
 
     if (engineDead) {
@@ -567,23 +569,20 @@
     return chips;
   }
 
-  // Under the board: just the on/off lightbulb and the opening name.
-  function buildBar(ctx, uci) {
+  // Under the board: just the on/off lightbulb — no box, no text — so it stays
+  // tiny and clear of the clock. The opening name lives in the panel header.
+  function buildBar() {
     const lit = state.enabled;
-    const bulb = `<button class="cc-bulb${lit ? ' cc-bulb--on' : ''}" data-act="toggle" title="${lit ? 'Turn coaching off' : 'Turn coaching on'}" aria-label="Toggle coaching">💡</button>`;
-    if (!lit || (ctx !== 'bot' && ctx !== 'analysis')) {
-      return `<div class="cc-line">${bulb}</div>`;
-    }
-    const opening = detectOpening(uci);
-    const titleText = opening ? `${opening.eco} · ${opening.name}` : (OPENINGS ? 'Out of book' : 'Loading…');
-    return `<div class="cc-line">${bulb}<span class="cc-title" title="${esc(titleText)}">${esc(titleText)}</span></div>`;
+    return `<button class="cc-bulb${lit ? ' cc-bulb--on' : ''}" data-act="toggle" title="${lit ? 'Turn coaching off' : 'Turn coaching on'}" aria-label="Toggle coaching">💡</button>`;
   }
 
   // Bottom-right of the screen: settings + results, with a minimize/expand button.
   function buildPanel(ctx, uci) {
     const min = state.panelMin;
+    const opening = detectOpening(uci);
+    const titleText = opening ? `${opening.eco} · ${opening.name}` : (OPENINGS ? 'Out of book' : 'Coach');
     const header = `<div class="cc-phead">
-      <span class="cc-ptitle">♞ Coach</span>
+      <span class="cc-ptitle" title="${esc(titleText)}">♞ ${esc(titleText)}</span>
       <button class="cc-pbtn" data-act="panelmin" title="${min ? 'Expand' : 'Minimize'}" aria-label="${min ? 'Expand' : 'Minimize'}">${min ? '▢' : '—'}</button>
     </div>`;
     if (min) return header;
@@ -617,22 +616,26 @@
     }
     bar.style.display = '';
 
-    const coached = ctx === 'bot' || ctx === 'analysis';
-    const uci = coached ? sanToUci(bridgeSans || []) : [];
+    // The ECO book is light and powers the opening name (shown even when
+    // coaching is off), so load it whenever we're on a board. Stockfish — the
+    // heavy WASM — stays on-demand and only fires while coaching is on.
+    loadOpenings();
 
-    // Kick off / refresh continuous analysis while coaching is on.
-    if (state.enabled && coached) maybeAnalyze(uci);
+    const uci = sanToUci(bridgeSans || []);
+
+    // Kick off / refresh continuous analysis only while coaching is on.
+    if (state.enabled) maybeAnalyze(uci);
 
     // Arrows (independent of the bar's text so a board re-render can't strand them).
     const haveEngine = engineState.status === 'done' && engineState.sig === curSig(uci) && engineState.result;
-    const arrows = (state.enabled && coached) ? computeArrows(uci, haveEngine) : [];
+    const arrows = state.enabled ? computeArrows(uci, haveEngine) : [];
     const arrowSig = (isFlipped() ? 'f|' : 'n|') + arrows.map((a) => a.color + a.uci).join('|');
     if (arrowSig !== lastArrowSig || !document.getElementById(ARROW_ID)) {
       drawArrows(arrows);
       lastArrowSig = arrowSig;
     }
 
-    const showPanel = state.enabled && (coached || ctx === 'live-human');
+    const showPanel = state.enabled;
     panel.style.display = showPanel ? '' : 'none';
 
     const sig = [ctx, state.enabled, state.panelMin, showPanel, state.openingId || 'auto',
@@ -641,7 +644,7 @@
     lastSig = sig;
 
     bar.className = 'chess-coach-bar';
-    bar.innerHTML = buildBar(ctx, uci);
+    bar.innerHTML = buildBar();
     bindBar(bar);
 
     if (showPanel) {
@@ -729,7 +732,6 @@
   }
 
   function start() {
-    loadOpenings();
     let lastUrl = location.href;
     const obs = new MutationObserver(() => {
       if (location.href !== lastUrl) { lastUrl = location.href; lastSig = ''; lastArrowSig = ''; schedule(500); }

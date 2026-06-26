@@ -69,13 +69,27 @@ async function batchImport(pgns, port) {
 // otherwise block a worker created from a content script.
 let creatingOffscreen = null;
 
+// DOMException does not inherit from Error, so String(e) yields the useless
+// "[object DOMException]". Surface its name (e.g. AbortError) and message.
+function errStr(e) {
+  if (!e) return 'unknown error';
+  if (typeof e === 'string') return e;
+  const parts = [e.name, e.message].filter(Boolean);
+  return parts.length ? parts.join(': ') : String(e);
+}
+
 async function ensureOffscreen() {
-  if (await chrome.offscreen.hasDocument()) return;
+  try { if (await chrome.offscreen.hasDocument()) return; } catch {}
   if (creatingOffscreen) { await creatingOffscreen; return; }
   creatingOffscreen = chrome.offscreen.createDocument({
     url: 'offscreen.html',
     reasons: ['WORKERS'],
     justification: 'Run the Stockfish engine (WebAssembly) for the in-game coach.'
+  }).catch((e) => {
+    // A concurrent caller (or a prior call after an SW restart) may have
+    // already created it; "single offscreen document" means we're fine.
+    if (/single offscreen document/i.test(e?.message || '')) return;
+    throw e;
   });
   try { await creatingOffscreen; } finally { creatingOffscreen = null; }
 }
@@ -93,7 +107,7 @@ async function engineStop() {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'CC_ANALYZE') {
-    engineAnalyze(msg).then(sendResponse).catch((e) => sendResponse({ error: e.message || String(e) }));
+    engineAnalyze(msg).then(sendResponse).catch((e) => sendResponse({ error: errStr(e) }));
     return true;
   }
   if (msg.type === 'CC_ENGINE_STOP') { engineStop(); return false; }
