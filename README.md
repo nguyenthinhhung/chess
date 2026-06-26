@@ -23,24 +23,34 @@ Chrome extension that imports chess.com games into Lichess for unlimited Stockfi
 
 **Manual PGN** — paste any PGN into the popup textarea and import directly.
 
-## Opening Coach
+## Chess Coach
 
-A built-in repertoire trainer for the **Italian Game** (as White) and the
-**Caro-Kann Defense** (as Black). A small panel docks to the top-right of the
-board and, move by move, tells you the book move, names the line, and flags when
-you or your opponent leave preparation.
+An in-game coach that recognises the opening, guides you along book lines, and
+runs Stockfish to suggest moves throughout the rest of the game. A control bar
+docks **under the board**, anchored by a 💡 lightbulb button that toggles
+coaching on and off.
 
-**Fair play:** real-time guidance is shown **only** on practice surfaces — games
-vs the computer/bots and the analysis board. In a game against a human the panel
-refuses to give live hints and only offers an opening **review after the game has
-ended**. Helping during a live game against another person is cheating and is
-deliberately not built.
+When coaching is on it draws arrows straight on the board:
 
-Pick what to train from the **Train** dropdown in the panel (Auto-detect, or a
-specific opening such as Caro-Kann). Choosing one pins that opening and side, so
-the coach guides you from move one instead of guessing. Toggle the whole thing
-with the **ON/OFF** button in the panel header (all choices are remembered).
-Edit `repertoire.js` to add lines or your own openings — the tree is plain SAN.
+- **Top 3 engine moves** for the side to move, coloured by rank — best (green),
+  second (blue), third (amber).
+- **Book move** (violet, marked **B** / 📖) while you're inside a known opening.
+  In the opening this is the priority recommendation; the engine arrows are the
+  alternatives.
+- **Opponent's likely reply** (red, dashed) taken from Stockfish's principal
+  variation, so you can read their intention.
+
+The bar also shows the recognised opening name (ECO code + name), the evaluation,
+a short grounded explanation of the best move, and the opponent's expected reply.
+
+**Pick an opening to play** from the dropdown (Auto-detect, or one of ~30 popular
+openings such as the Italian Game, Sicilian, or Queen's Gambit). Choosing one
+guides you along that line move by move. **Set the Stockfish search depth** with
+the slider (6–22; deeper is stronger but slower). All choices are remembered.
+
+Opening names come from `openings.json` — a ~3,700-line ECO database built from
+the open-source [lichess-org/chess-openings](https://github.com/lichess-org/chess-openings)
+dataset, fetched lazily so it never slows down page load.
 
 ## Files
 
@@ -49,16 +59,19 @@ Edit `repertoire.js` to add lines or your own openings — the tree is plain SAN
 | `manifest.json` | MV3 config |
 | `pgn.js` | Pure TCN→UCI→SAN→PGN conversion (shared with tests) |
 | `chesscore.js` | Minimal chess engine (apply SAN/UCI, FEN) used by the coach |
-| `repertoire.js` | Curated Italian / Caro-Kann opening trees (data) |
-| `coach.js` | Pure engine: match played moves to the repertoire |
+| `openings.json` | ECO opening database (UCI line → name), fetched on demand |
+| `explain.js` | Turns an engine eval into a short, grounded explanation |
+| `engine.js` | Stockfish (WASM) worker wrapper — UCI, MultiPV searches |
+| `offscreen.html/js` | Offscreen document that hosts the engine (page-CSP-free) |
 | `content.js` | Button injection + PGN scrape on game pages |
-| `coach-ui.js` | Opening Coach panel + live chess.com integration |
-| `background.js` | Service worker: Lichess API client + rate limiter |
+| `chess-coach.js` | Coach UI: under-board bar, bottom-right panel, board arrows |
+| `chess-coach-bridge.js` | MAIN-world bridge: reads the live move list |
+| `background.js` | Service worker: Lichess client + engine offscreen relay |
 | `popup.html/css/js` | Toolbar popup for batch + paste import |
 | `options.html/js` | Lichess token settings |
-| `styles.css` | Injected button + coach panel styles |
+| `styles.css` | Injected button + coach bar styles |
 | `icons/` | Toolbar icons + `generate.js` to regenerate them |
-| `test/` | Node tests for the PGN converter, chess engine, and coach |
+| `test/` | Node tests for the PGN converter, chess engine, and explainer |
 
 ## Development
 

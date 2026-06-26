@@ -56,124 +56,183 @@
 }
 
 /* ===========================================================================
-   Opening Coach panel — drilling Italian / Caro-Kann on bot & analysis boards.
+   Chess Coach — under-board control bar (bot & analysis surfaces).
+   The bar is fixed and re-anchored under the board on every render. Board
+   arrows are an inline SVG injected into the board element, not styled here.
    =========================================================================== */
-.opening-coach {
+.chess-coach-bar {
   position: fixed;
-  top: 16px;
-  right: 16px;
-  z-index: 2147483646;
-  width: 280px;
-  max-width: calc(100vw - 32px);
+  z-index: 2147483640;
+  box-sizing: border-box;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color: #e8e6e3;
-  background: #2a2a28;
+  background: rgba(38, 38, 36, 0.96);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  overflow: hidden;
-  font-size: 13px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  padding: 7px 9px;
+  font-size: 12.5px;
+  overflow-y: hidden;
+  overflow-x: auto;
 }
 
-.opening-coach__head {
+.chess-coach-bar * { box-sizing: border-box; }
+
+.cc-line {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
-  background: #312f2c;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  white-space: nowrap;
+}
+.cc-line--wrap { white-space: normal; }
+
+.cc-sep {
+  width: 1px;
+  align-self: stretch;
+  background: rgba(255, 255, 255, 0.12);
+  margin: 2px 1px;
 }
 
-.opening-coach__title {
-  flex: 1;
+.cc-bulb {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: #1f1e1c;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  filter: grayscale(1) brightness(0.7);
+  transition: filter 0.15s, box-shadow 0.15s, border-color 0.15s;
+}
+.cc-bulb:hover { border-color: rgba(255, 255, 255, 0.35); }
+.cc-bulb--on {
+  filter: none;
+  border-color: #b58a00;
+  box-shadow: 0 0 10px rgba(240, 200, 60, 0.5);
+}
+
+.cc-title {
+  flex: 0 1 auto;
   min-width: 0;
   font-weight: 600;
-  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.opening-coach__title small { opacity: 0.6; font-weight: 400; }
-
-.opening-coach__btn {
-  flex-shrink: 0;
-  background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  color: #cfcdc9;
-  border-radius: 6px;
-  padding: 2px 8px;
-  font-size: 12px;
-  cursor: pointer;
-  line-height: 1.5;
-}
-.opening-coach__btn:hover { background: rgba(255, 255, 255, 0.08); }
-.opening-coach__btn--on { color: #b6d36b; border-color: #5c7a1e; }
-
-.opening-coach__body { padding: 10px; }
-.opening-coach.is-min .opening-coach__body { display: none; }
-
-.opening-coach__row { margin: 0 0 8px; line-height: 1.45; }
-.opening-coach__row:last-child { margin-bottom: 0; }
-
-.opening-coach__badge {
-  display: inline-block;
-  font-size: 11px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  color: #bdbbb7;
-}
-
-.opening-coach__move {
-  font-size: 20px;
-  font-weight: 700;
-  color: #b6d36b;
-}
-.opening-coach__move-uci { font-size: 12px; opacity: 0.6; margin-left: 6px; }
-
-.opening-coach__note {
-  font-size: 12px;
-  color: #c9c7c3;
-  background: rgba(255, 255, 255, 0.04);
-  border-left: 2px solid #5c7a1e;
-  padding: 6px 8px;
-  border-radius: 0 6px 6px 0;
-}
-
-.opening-coach__status--good { color: #b6d36b; }
-.opening-coach__status--warn { color: #e0a458; }
-.opening-coach__status--info { color: #7fb2d6; }
-
-.opening-coach__list { margin: 4px 0 0; padding-left: 18px; }
-.opening-coach__list li { margin: 2px 0; }
-
-.opening-coach__fair {
-  font-size: 12px;
-  color: #e0a458;
-  line-height: 1.5;
-}
-
-.opening-coach__pick {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.opening-coach__pick-label {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: #8f8d89;
-  flex-shrink: 0;
-}
-.opening-coach__select {
-  flex: 1;
+.cc-select {
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: 170px;
   background: #1f1e1c;
   color: #e8e6e3;
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 6px;
-  padding: 4px 6px;
+  padding: 3px 5px;
   font-size: 12px;
   cursor: pointer;
 }
-.opening-coach__select:focus { outline: none; border-color: #5c7a1e; }
+.cc-select:focus { outline: none; border-color: #5c7a1e; }
+
+.cc-depth {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: #bdbbb7;
+}
+.cc-depth output { font-weight: 700; color: #e8e6e3; min-width: 1.4em; text-align: right; }
+.cc-depth input[type="range"] { width: 84px; cursor: pointer; accent-color: #759900; }
+
+/* Inline result chips. */
+.cc-chip {
+  flex: 0 0 auto;
+  font-size: 12px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+}
+.cc-chip b { font-weight: 700; }
+.cc-good { color: #b6d36b; background: rgba(118, 153, 0, 0.16); }
+.cc-info { color: #7fb2d6; }
+.cc-book { color: #d6bdf2; background: rgba(142, 68, 173, 0.22); }
+.cc-alts { color: #bdbbb7; }
+.cc-opp { color: #e89089; background: rgba(208, 70, 59, 0.16); }
+
+/* ===========================================================================
+   Chess Coach — settings + results panel, fixed at the screen's bottom-right.
+   Minimizable; sits above the Lichess analyze button.
+   =========================================================================== */
+.chess-coach-panel {
+  position: fixed;
+  right: 16px;
+  bottom: 72px;
+  z-index: 2147483640;
+  box-sizing: border-box;
+  width: 252px;
+  max-width: calc(100vw - 32px);
+  max-height: 70vh;
+  overflow-y: auto;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #e8e6e3;
+  background: rgba(38, 38, 36, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  font-size: 12.5px;
+}
+.chess-coach-panel * { box-sizing: border-box; }
+.chess-coach-panel.is-min { width: auto; }
+
+.cc-phead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px 10px 0 0;
+}
+.chess-coach-panel.is-min .cc-phead { border-bottom: none; border-radius: 10px; }
+.cc-ptitle { flex: 1; font-weight: 600; white-space: nowrap; }
+.cc-pbtn {
+  flex-shrink: 0;
+  min-width: 24px;
+  height: 22px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #cfcdc9;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+.cc-pbtn:hover { background: rgba(255, 255, 255, 0.08); }
+
+.cc-pbody { padding: 9px 10px; display: flex; flex-direction: column; gap: 9px; }
+.cc-prow { margin: 0; }
+.cc-pbody .cc-select { flex: 1 1 auto; max-width: none; width: 100%; }
+.cc-pbody .cc-depth { font-size: 12px; }
+.cc-pbody .cc-depth input[type="range"] { flex: 1; width: auto; }
+.cc-results { display: flex; flex-wrap: wrap; gap: 6px; }
+.cc-results:empty { display: none; }
+
+.cc-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  font-size: 11px;
+  color: #bdbbb7;
+}
+.cc-lg { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.cc-lg i {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  display: inline-block;
+  box-sizing: border-box;
+}

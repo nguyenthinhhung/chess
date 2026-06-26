@@ -265,7 +265,7 @@ const _exports = {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = _exports;
 } else if (typeof globalThis !== 'undefined') {
-  // Content-script world: attach to globalThis so coach.js / coach-ui.js can
-  // reach these regardless of cross-file const sharing quirks.
+  // Content-script world: attach to globalThis so chess-coach.js / explain.js
+  // can reach these regardless of cross-file const sharing quirks.
   Object.assign(globalThis, _exports);
 }

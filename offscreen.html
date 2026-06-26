@@ -1,0 +1,12 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Chess Coach engine</title></head>
+<body>
+<!-- This page exists only to host the Stockfish Web Worker. As an extension
+     page it runs under the extension's own CSP (which allows wasm-unsafe-eval),
+     so the engine works even on sites whose page CSP would block a worker
+     created from a content script (e.g. chess.com). -->
+<script src="engine.js"></script>
+<script src="offscreen.js"></script>
+</body>
+</html>
