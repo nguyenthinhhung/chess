@@ -1,4 +1,5 @@
 const BUTTON_ID = 'lichess-analyzer-btn';
+const COACH_BAR_ID = 'chess-coach-bar'; // owned by chess-coach.js; we dock our button in it
 let contextDead = false;
 
 // chrome.runtime.id becomes undefined once the extension is reloaded/uninstalled
@@ -82,7 +83,7 @@ async function extractPgn() {
 function createButton() {
   const btn = document.createElement('button');
   btn.id = BUTTON_ID;
-  btn.className = 'lichess-analyzer-fab';
+  btn.className = 'lichess-analyzer-fab lichess-analyzer-fab--floating';
   btn.title = 'Analyze on Lichess';
   // Official Lichess knight logo (from lichess-org/lila public/logo/lichess.svg).
   btn.innerHTML = `
@@ -124,10 +125,20 @@ function createButton() {
   return btn;
 }
 
+// Docks the button to the left of the coach's lightbulb, under the board,
+// once that bar exists. Until then (or if the coach bar isn't present, e.g.
+// mid-navigation), it floats in the screen corner like before.
 function injectButton() {
-  if (document.getElementById(BUTTON_ID)) return;
   if (!getGameId()) return;
-  (document.body || document.documentElement).appendChild(createButton());
+  const btn = document.getElementById(BUTTON_ID) || createButton();
+  const bar = document.getElementById(COACH_BAR_ID);
+  if (bar) {
+    btn.classList.remove('lichess-analyzer-fab--floating');
+    if (bar.firstChild !== btn) bar.insertBefore(btn, bar.firstChild);
+  } else {
+    btn.classList.add('lichess-analyzer-fab--floating');
+    if (!btn.isConnected) (document.body || document.documentElement).appendChild(btn);
+  }
 }
 
 // SPA navigation observer for button injection. chess.com mutates the DOM

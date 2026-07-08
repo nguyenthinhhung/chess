@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Chess.com to Lichess Analyzer",
+  "name": "Chess Coach for Chess.com",
   "version": "0.4.0",
-  "description": "Import chess.com games into Lichess for analysis, plus an in-game Stockfish coach with opening recognition (vs bots and on the analysis board).",
+  "description": "Real-time Stockfish coaching on chess.com — move suggestions, opening recognition, and explanations in every game (bots or live opponents), plus one-click PGN import to Lichess for deeper analysis.",
   "permissions": ["storage", "offscreen"],
   "host_permissions": [
     "https://*.chess.com/*",

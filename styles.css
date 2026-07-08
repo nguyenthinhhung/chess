@@ -1,43 +1,51 @@
+/* Same footprint AND same dark, understated look as the coach's lightbulb
+   (.cc-bulb) so the two read as one family of buttons under the board. */
 .lichess-analyzer-fab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  background: #1f1e1c;
+  color: #b6d36b;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+}
+.lichess-analyzer-fab:hover:not(:disabled) { border-color: rgba(255, 255, 255, 0.35); }
+.lichess-analyzer-fab:disabled { opacity: 0.6; cursor: wait; }
+
+/* Fallback spot (screen corner) for while the coach bar hasn't mounted yet —
+   here it's a standalone FAB again, so it goes back to the bright, high-
+   contrast look it needs to stand out directly on the page. */
+.lichess-analyzer-fab--floating {
   position: fixed;
   right: 16px;
   bottom: 16px;
   z-index: 2147483647;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  padding: 0;
   background: #fff;
   color: #759900;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  border-radius: 50%;
-  cursor: pointer;
+  border-color: rgba(0, 0, 0, 0.08);
   box-shadow: 0 4px 10px rgba(0, 0, 0, 0.24), 0 1px 3px rgba(0, 0, 0, 0.16);
-  transition: background 0.15s, color 0.15s, transform 0.15s, box-shadow 0.15s;
 }
-
-.lichess-analyzer-fab:hover:not(:disabled) {
+.lichess-analyzer-fab--floating:hover:not(:disabled) {
   background: #759900;
   color: #fff;
+  border-color: rgba(0, 0, 0, 0.08);
   transform: translateY(-1px);
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.32), 0 3px 6px rgba(0, 0, 0, 0.2);
 }
-
-.lichess-analyzer-fab:active:not(:disabled) {
+.lichess-analyzer-fab--floating:active:not(:disabled) {
   transform: translateY(0);
   box-shadow: 0 3px 8px rgba(0, 0, 0, 0.28);
 }
 
-.lichess-analyzer-fab:disabled {
-  opacity: 0.75;
-  cursor: wait;
-}
-
 .lichess-analyzer-fab__icon {
-  width: 26px;
-  height: 26px;
+  width: 17px;
+  height: 17px;
   flex-shrink: 0;
 }
 
@@ -64,8 +72,12 @@
   position: fixed;
   z-index: 2147483640;
   box-sizing: border-box;
-  /* No box of its own — it only holds the round lightbulb button, which carries
-     its own background. The opening name now lives in the panel header. */
+  /* No box of its own — it only holds the round buttons (Lichess analyze +
+     lightbulb), which carry their own backgrounds. The opening name lives in
+     the panel header. */
+  display: flex;
+  align-items: center;
+  gap: 6px;
   background: none;
   border: 0;
   box-shadow: none;
@@ -73,6 +85,9 @@
 }
 
 .chess-coach-bar * { box-sizing: border-box; }
+/* Keeps the slot out of the flex box tree so its child button is a direct
+   flex item, evenly sized and spaced next to the analyze button. */
+.cc-bulb-slot { display: contents; }
 
 .cc-line {
   display: flex;
@@ -89,6 +104,9 @@
   margin: 2px 1px;
 }
 
+/* Frame (size, border, background) always matches .lichess-analyzer-fab —
+   only the icon's own color changes for on/off, via currentColor, so the two
+   buttons never look mismatched. */
 .cc-bulb {
   flex-shrink: 0;
   display: inline-flex;
@@ -100,17 +118,15 @@
   border-radius: 50%;
   border: 1px solid rgba(255, 255, 255, 0.15);
   background: #1f1e1c;
+  color: #b6d36b;
   cursor: pointer;
-  font-size: 15px;
-  line-height: 1;
-  filter: grayscale(1) brightness(0.7);
-  transition: filter 0.15s, box-shadow 0.15s, border-color 0.15s;
+  transition: color 0.15s, border-color 0.15s;
 }
 .cc-bulb:hover { border-color: rgba(255, 255, 255, 0.35); }
-.cc-bulb--on {
-  filter: none;
-  border-color: #b58a00;
-  box-shadow: 0 0 10px rgba(240, 200, 60, 0.5);
+.cc-bulb-icon { width: 17px; height: 17px; flex-shrink: 0; }
+.cc-bulb--on .cc-bulb-icon {
+  color: #ffce45;
+  filter: drop-shadow(0 0 3px rgba(255, 206, 69, 0.8));
 }
 
 .cc-title {
@@ -162,13 +178,15 @@
 .cc-opp { color: #e89089; background: rgba(208, 70, 59, 0.16); }
 
 /* ===========================================================================
-   Chess Coach — settings + results panel, fixed at the screen's bottom-right.
-   Minimizable; sits above the Lichess analyze button.
+   Chess Coach — settings + results panel, fixed at the screen's bottom-right
+   corner (the Lichess analyze button used to float here; it now sits next to
+   the lightbulb under the board instead, so the panel keeps this spot in
+   both its expanded and minimized states).
    =========================================================================== */
 .chess-coach-panel {
   position: fixed;
   right: 16px;
-  bottom: 72px;
+  bottom: 16px;
   z-index: 2147483640;
   box-sizing: border-box;
   width: 252px;
@@ -184,7 +202,7 @@
   font-size: 12.5px;
 }
 .chess-coach-panel * { box-sizing: border-box; }
-.chess-coach-panel.is-min { width: auto; }
+.chess-coach-panel.is-min { width: 150px; }
 
 .cc-phead {
   display: flex;
