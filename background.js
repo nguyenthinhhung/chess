@@ -1,3 +1,9 @@
+// Pure ai/* modules (see plan.md) — loaded here, not in offscreen.js, since
+// they call fetch() directly rather than going through the Stockfish worker.
+importScripts('ai/prompt-builder.js', 'ai/response-parser.js', 'ai/gemini-service.js');
+const ChessAiPrompt = globalThis.ChessAiPrompt;
+const ChessAiGemini = globalThis.ChessAiGemini;
+
 const LICHESS_IMPORT_URL = 'https://lichess.org/api/import';
 const RATE_LIMIT_MS = 3500;
 
@@ -105,12 +111,37 @@ async function engineStop() {
   try { if (await chrome.offscreen.hasDocument()) await chrome.offscreen.closeDocument(); } catch {}
 }
 
+// ---- Gemini move explanations (see plan.md Phases 1-5, 7) ------------------
+// Cached in chrome.storage.local keyed by FEN+bestMove+depth (Phase 5): once a
+// position has been explained, re-analysing it never calls Gemini again.
+const AI_CACHE_PREFIX = 'ccAiCache:';
+
+async function getGeminiSettings() {
+  const { geminiApiKey, geminiModel } = await chrome.storage.local.get(['geminiApiKey', 'geminiModel']);
+  return { apiKey: geminiApiKey || '', model: geminiModel || ChessAiGemini.DEFAULT_MODEL };
+}
+
+async function explainWithCache(data) {
+  const cacheKey = AI_CACHE_PREFIX + ChessAiPrompt.cacheKeyFor(data);
+  const cached = await chrome.storage.local.get(cacheKey);
+  if (cached[cacheKey]) return cached[cacheKey];
+
+  const { apiKey, model } = await getGeminiSettings();
+  const result = await ChessAiGemini.explainMove(data, { apiKey, model });
+  try { await chrome.storage.local.set({ [cacheKey]: result }); } catch {}
+  return result;
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'CC_ANALYZE') {
     engineAnalyze(msg).then(sendResponse).catch((e) => sendResponse({ error: errStr(e) }));
     return true;
   }
   if (msg.type === 'CC_ENGINE_STOP') { engineStop(); return false; }
+  if (msg.type === 'CC_EXPLAIN') {
+    explainWithCache(msg.data).then((result) => sendResponse({ result })).catch((e) => sendResponse({ error: errStr(e) }));
+    return true;
+  }
   if (msg.action === 'importToLichess') {
     importToLichess(msg.pgn).then(sendResponse);
     return true;

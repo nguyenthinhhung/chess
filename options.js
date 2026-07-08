@@ -17,3 +17,25 @@ $('save').addEventListener('click', () => {
 tokenInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') $('save').click();
 });
+
+const geminiKeyInput = $('geminiKey');
+const geminiModelInput = $('geminiModel');
+const savedGemini = $('savedGemini');
+
+chrome.storage.local.get(['geminiApiKey', 'geminiModel'], (state) => {
+  if (state.geminiApiKey) geminiKeyInput.value = state.geminiApiKey;
+  if (state.geminiModel) geminiModelInput.value = state.geminiModel;
+});
+
+$('saveGemini').addEventListener('click', () => {
+  const apiKey = geminiKeyInput.value.trim();
+  const model = geminiModelInput.value.trim();
+  chrome.storage.local.set({ geminiApiKey: apiKey, geminiModel: model }, () => {
+    savedGemini.textContent = apiKey ? 'Saved' : 'Cleared';
+    setTimeout(() => (savedGemini.textContent = ''), 2000);
+  });
+});
+
+geminiKeyInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') $('saveGemini').click();
+});

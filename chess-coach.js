@@ -15,6 +15,8 @@
   if (!createPosition || !applySan) return; // core failed to load
 
   const Explain = globalThis.ChessExplain;
+  const sliceToViewedPly = globalThis.sliceToViewedPly;
+  const AiPrompt = globalThis.ChessAiPrompt;
 
   // The Stockfish engine runs in an offscreen document (see background.js /
   // offscreen.js). Content scripts on chess.com can't host the worker because
@@ -89,6 +91,7 @@
 
   let bridgeSans = null;
   let bridgePlayingAs = null;
+  let bridgePlyViewed = null; // ply currently on screen; null/out-of-range = end of game (live play)
 
   // openings.json, lazily fetched the first time we land on a coached surface.
   let OPENINGS = null;
@@ -98,6 +101,12 @@
   //   status: 'idle' | 'running' | 'done' | 'error'
   const engineState = { sig: null, status: 'idle', result: null };
   let pendingUci = null;
+
+  // Gemini explanation of the current best move, fetched on demand (user
+  // clicks "Explain") — never automatically, see plan.md Phase 7 cost control.
+  //   key: cacheKeyFor-style string identifying which position this belongs to
+  //   status: 'idle' | 'running' | 'done' | 'error'
+  const explainState = { key: null, status: 'idle', data: null, error: null };
   // Circuit breaker: after repeated failures, stop touching the engine for the
   // rest of the session so a broken Stockfish can never be spawned in a loop.
   let engineFailures = 0;
@@ -118,6 +127,7 @@
     if (!d || d.__chessCoach !== 'moves') return;
     bridgeSans = Array.isArray(d.sans) ? d.sans : [];
     bridgePlayingAs = d.playingAs ?? null;
+    bridgePlyViewed = typeof d.plyViewed === 'number' ? d.plyViewed : null;
     lastSig = '';
     schedule(50);
   });
@@ -359,6 +369,87 @@
     lastSig = '';
     render(detectContext());
     if (pendingUci) { const p = pendingUci; pendingUci = null; maybeAnalyze(p); }
+  }
+
+  // ---- Gemini explanation (on demand) -----------------------------------------
+  // Shape data for the AI service from the already-computed engine result —
+  // never the raw Stockfish log (see plan.md Phase 1).
+  function buildExplainInput(res) {
+    const best = res.lines && res.lines[0];
+    if (!best || !best.move) return null;
+    return {
+      fen: toFen(res.pos),
+      bestMove: best.move,
+      eval: best.score,
+      depth: best.depth || state.depth,
+      pv: (best.pv || []).slice(0, 8),
+      topMoves: res.lines.slice(0, 3).filter((l) => l.move).map((l) => ({ move: l.move, eval: l.score }))
+    };
+  }
+
+  function requestExplain(data) {
+    const key = AiPrompt ? AiPrompt.cacheKeyFor(data) : `${data.fen}|${data.bestMove}|${data.depth}`;
+    if (explainState.key === key && explainState.status !== 'idle') return; // already fetching/fetched
+    explainState.key = key;
+    explainState.status = 'running';
+    explainState.data = null;
+    explainState.error = null;
+    lastSig = '';
+    render(detectContext());
+    try {
+      chrome.runtime.sendMessage({ type: 'CC_EXPLAIN', data }, (resp) => {
+        if (explainState.key !== key) return; // user moved on to a different position
+        const err = chrome.runtime.lastError;
+        if (err) { explainState.status = 'error'; explainState.error = err.message; }
+        else if (resp && resp.error) { explainState.status = 'error'; explainState.error = resp.error; }
+        else if (resp && resp.result) { explainState.status = 'done'; explainState.data = resp.result; }
+        else { explainState.status = 'error'; explainState.error = 'no response'; }
+        lastSig = '';
+        render(detectContext());
+      });
+    } catch (e) {
+      explainState.status = 'error';
+      explainState.error = e && e.message ? e.message : String(e);
+    }
+  }
+
+  // Renders the Explain button, its loading/error state, or the result — a
+  // self-contained row like resultsHtml(), recomputing haveEngine itself.
+  function explainHtml(uci) {
+    if (!AiPrompt) return '';
+    const haveEngine = engineState.status === 'done' && engineState.sig === curSig(uci) && engineState.result;
+    if (!haveEngine) return '';
+
+    const data = buildExplainInput(engineState.result);
+    const skip = AiPrompt.shouldSkipExplain(data);
+    if (skip.skip) {
+      return `<div class="cc-prow cc-explain"><span class="cc-chip cc-info">${esc(skip.reason)}</span></div>`;
+    }
+
+    const key = AiPrompt.cacheKeyFor(data);
+    if (explainState.key !== key || explainState.status === 'idle') {
+      return `<div class="cc-prow cc-explain"><button class="cc-explain-btn" data-act="explain">✨ Explain this move</button></div>`;
+    }
+    if (explainState.status === 'running') {
+      return `<div class="cc-prow cc-explain"><span class="cc-chip cc-info">Analysing…</span></div>`;
+    }
+    if (explainState.status === 'error') {
+      return `<div class="cc-prow cc-explain">
+        <span class="cc-chip cc-info" title="${esc(explainState.error || '')}">⚠ Explain failed</span>
+        <button class="cc-explain-btn" data-act="explain">Retry</button>
+      </div>`;
+    }
+
+    const d = explainState.data;
+    const stars = '★'.repeat(d.difficulty) + '☆'.repeat(5 - d.difficulty);
+    return `<div class="cc-prow cc-explain-result">
+      <div class="cc-erow"><b>💡 Why</b> ${esc(d.whyBest || d.summary || '')}</div>
+      ${d.strategy ? `<div class="cc-erow"><b>♟ Strategy</b> ${esc(d.strategy)}</div>` : ''}
+      ${d.tactics ? `<div class="cc-erow"><b>⚔ Tactics</b> ${esc(d.tactics)}</div>` : ''}
+      ${d.nextPlan && d.nextPlan.length ? `<div class="cc-erow"><b>🎯 Plan</b> ${d.nextPlan.map(esc).join(' → ')}</div>` : ''}
+      ${d.commonMistake ? `<div class="cc-erow"><b>⚠ Mistake</b> ${esc(d.commonMistake)}</div>` : ''}
+      <div class="cc-erow cc-diff">${stars}</div>
+    </div>`;
   }
 
   // ---- arrows ----------------------------------------------------------------
@@ -608,6 +699,7 @@
       <label class="cc-prow cc-depth">Arrows <output data-cc-arrows-val>${state.arrows}</output>
         <input type="range" min="${ARROW_MIN}" max="${ARROW_MAX}" step="1" value="${state.arrows}" data-cc-arrows></label>
       <div class="cc-prow cc-results">${resultsHtml(uci)}</div>
+      ${explainHtml(uci)}
       <div class="cc-prow cc-legend">${legend}</div>
     </div>`;
   }
@@ -631,7 +723,10 @@
     // heavy WASM — stays on-demand and only fires while coaching is on.
     loadOpenings();
 
-    const uci = sanToUci(bridgeSans || []);
+    // Only the ply currently on screen matters — bridgeSans is always the full
+    // game, even mid-scrub through a finished game's move list.
+    const viewedSans = sliceToViewedPly ? sliceToViewedPly(bridgeSans || [], bridgePlyViewed) : (bridgeSans || []);
+    const uci = sanToUci(viewedSans);
 
     // Kick off / refresh continuous analysis only while coaching is on.
     if (state.enabled) maybeAnalyze(uci);
@@ -639,7 +734,8 @@
     // Arrows (independent of the bar's text so a board re-render can't strand them).
     const haveEngine = engineState.status === 'done' && engineState.sig === curSig(uci) && engineState.result;
     const arrows = state.enabled ? computeArrows(uci, haveEngine) : [];
-    const arrowSig = (isFlipped() ? 'f|' : 'n|') + arrows.map((a) => a.color + a.uci).join('|');
+    const arrowSig = (isFlipped() ? 'f|' : 'n|') + (bridgePlyViewed ?? 'end') + '|' +
+      arrows.map((a) => a.color + a.uci).join('|');
     if (arrowSig !== lastArrowSig || !document.getElementById(ARROW_ID)) {
       drawArrows(arrows);
       lastArrowSig = arrowSig;
@@ -660,7 +756,7 @@
     if (showPanel) {
       panel.className = 'chess-coach-panel' + (state.panelMin ? ' is-min' : '');
       panel.innerHTML = buildPanel(ctx, uci);
-      bindPanel(panel);
+      bindPanel(panel, uci);
     }
   }
 
@@ -675,7 +771,14 @@
     });
   }
 
-  function bindPanel(el) {
+  function bindPanel(el, uci) {
+    el.querySelector('[data-act="explain"]')?.addEventListener('click', () => {
+      const haveEngine = engineState.status === 'done' && engineState.sig === curSig(uci) && engineState.result;
+      if (!haveEngine) return;
+      const data = buildExplainInput(engineState.result);
+      if (data) requestExplain(data);
+    });
+
     el.querySelector('[data-act="panelmin"]')?.addEventListener('click', () => {
       state.panelMin = !state.panelMin;
       save();

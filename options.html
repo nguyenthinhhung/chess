@@ -93,6 +93,26 @@
     </ol>
   </div>
 
+  <hr style="margin: 32px 0; border: 0; border-top: 1px solid #eee;">
+
+  <h1>Gemini Coach (optional)</h1>
+  <p class="sub">Adds an AI-written explanation of Stockfish's best move — strategy, tactics, and a short plan — on top of the raw evaluation.</p>
+
+  <label for="geminiKey">Gemini API key</label>
+  <input id="geminiKey" type="password" placeholder="AIza..." autocomplete="off">
+  <p class="hint">
+    Get a free key at
+    <a href="https://aistudio.google.com/app/apikey" target="_blank">aistudio.google.com/app/apikey</a>.
+  </p>
+
+  <label for="geminiModel">Model</label>
+  <input id="geminiModel" type="text" placeholder="gemini-2.5-flash" autocomplete="off">
+
+  <div>
+    <button id="saveGemini">Save</button>
+    <span id="savedGemini"></span>
+  </div>
+
   <script src="options.js"></script>
 </body>
 </html>

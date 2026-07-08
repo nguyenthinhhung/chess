@@ -20,7 +20,19 @@
     try { sans = game.getHistorySANs() || []; } catch { return null; }
     let playingAs = null;
     try { playingAs = typeof game.getPlayingAs === 'function' ? game.getPlayingAs() : null; } catch {}
-    return { sans, playingAs };
+    // getHistorySANs() always returns the FULL game, even while the user is
+    // scrubbing back through past moves — only getSelectedNode() tracks what is
+    // actually on screen (null at the starting position, before any move).
+    // Confirmed live: on a finished game, moveBackward() changes getFEN() and
+    // getSelectedNode().ply but leaves getHistorySANs() untouched.
+    let plyViewed = sans.length;
+    try {
+      if (typeof game.getSelectedNode === 'function') {
+        const node = game.getSelectedNode();
+        plyViewed = node && typeof node.ply === 'number' ? node.ply : 0;
+      }
+    } catch {}
+    return { sans, playingAs, plyViewed };
   }
 
   function tick() {
@@ -33,7 +45,10 @@
     if (sig === last) return;
     last = sig;
     try {
-      window.postMessage({ __chessCoach: 'moves', sans: data.sans, playingAs: data.playingAs }, '*');
+      window.postMessage(
+        { __chessCoach: 'moves', sans: data.sans, playingAs: data.playingAs, plyViewed: data.plyViewed },
+        '*'
+      );
     } catch {}
   }
 
