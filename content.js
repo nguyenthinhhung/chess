@@ -128,10 +128,16 @@ function createButton() {
 // Docks the button to the left of the coach's lightbulb, under the board,
 // once that bar exists. Until then (or if the coach bar isn't present, e.g.
 // mid-navigation), it floats in the screen corner like before.
+//
+// getGameId() only recognizes /game/live|daily/<id> URLs, but chess-coach.js
+// mounts its bar on far more surfaces (bot games, /play/computer, /analysis,
+// any page with a detected board — see chess-coach.js detectContext()). Once
+// that bar exists, chess-coach has already confirmed this is a real game
+// page, so dock here too even when the URL doesn't match a game id.
 function injectButton() {
-  if (!getGameId()) return;
-  const btn = document.getElementById(BUTTON_ID) || createButton();
   const bar = document.getElementById(COACH_BAR_ID);
+  if (!getGameId() && !bar) return;
+  const btn = document.getElementById(BUTTON_ID) || createButton();
   if (bar) {
     btn.classList.remove('lichess-analyzer-fab--floating');
     if (bar.firstChild !== btn) bar.insertBefore(btn, bar.firstChild);

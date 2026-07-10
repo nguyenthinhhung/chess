@@ -8,6 +8,9 @@
 // eval / topMoves[].eval are Stockfish score objects: { type: 'cp'|'mate', value }.
 
 const _pbIsNode = typeof module !== 'undefined' && module.exports;
+const _pbI18n = _pbIsNode ? require('../i18n.js') : globalThis.ChessI18n;
+
+const LANG_NAMES = { vi: 'Vietnamese' };
 
 const EXPLAIN_SCHEMA = {
   type: 'object',
@@ -34,16 +37,18 @@ function fmtEval(score) {
 // shallow to trust, or the position is already decided (mate found) — the
 // engine's own numbers say everything needed, an LLM gloss adds nothing.
 function shouldSkipExplain(data) {
-  if (!data || !data.bestMove) return { skip: true, reason: 'no analysis yet' };
-  if (typeof data.depth === 'number' && data.depth < 12) return { skip: true, reason: 'depth too shallow' };
-  if (data.eval && data.eval.type === 'mate') return { skip: true, reason: 'forced mate — nothing to explain' };
+  const lang = (data && data.lang) || 'en';
+  if (!data || !data.bestMove) return { skip: true, reason: _pbI18n.t(lang, 'skipNoAnalysis') };
+  if (typeof data.depth === 'number' && data.depth < 12) return { skip: true, reason: _pbI18n.t(lang, 'skipShallowDepth') };
+  if (data.eval && data.eval.type === 'mate') return { skip: true, reason: _pbI18n.t(lang, 'skipForcedMate') };
   return { skip: false, reason: null };
 }
 
 // A cheap, deterministic cache key (not a cryptographic hash) — unique enough
-// to key chrome.storage.local cache entries by position + search depth.
+// to key chrome.storage.local cache entries by position + search depth. Language
+// is included so a Vietnamese explanation never gets served for an English request.
 function cacheKeyFor(data) {
-  return `${data.fen}|${data.bestMove}|${data.depth || 0}`;
+  return `${data.fen}|${data.bestMove}|${data.depth || 0}|${data.lang || 'en'}`;
 }
 
 function buildExplainPrompt(data) {
@@ -51,13 +56,15 @@ function buildExplainPrompt(data) {
     .map((m, i) => `${i + 1}. ${m.move} (${fmtEval(m.eval)})`)
     .join('\n');
 
+  const langName = LANG_NAMES[data.lang];
   const system = [
     'You are a professional chess coach.',
     'Do NOT invent variations. Only explain using the supplied Stockfish analysis.',
     'Keep the explanation under 180 words total across all fields.',
     'Audience: a 1200 Elo player.',
+    langName ? `Write every text field in ${langName}, including move descriptions.` : null,
     'Return JSON only, matching the given schema exactly.'
-  ].join(' ');
+  ].filter(Boolean).join(' ');
 
   const user = [
     `Position (FEN): ${data.fen}`,

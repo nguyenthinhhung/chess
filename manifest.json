@@ -21,7 +21,7 @@
   "content_scripts": [
     {
       "matches": ["https://*.chess.com/*"],
-      "js": ["pgn.js", "chesscore.js", "explain.js", "ply-view.js", "ai/prompt-builder.js", "content.js", "chess-coach.js"],
+      "js": ["pgn.js", "chesscore.js", "i18n.js", "explain.js", "ply-view.js", "ai/prompt-builder.js", "content.js", "chess-coach.js"],
       "css": ["styles.css"],
       "run_at": "document_idle"
     },

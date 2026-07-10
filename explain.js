@@ -10,13 +10,15 @@
 
 const _eIsNode = typeof module !== 'undefined' && module.exports;
 const _ecc = _eIsNode ? require('./chesscore.js') : globalThis;
+const _eI18n = _eIsNode ? require('./i18n.js') : globalThis.ChessI18n;
 
-const PIECE_NAMES = { p: 'pawn', n: 'knight', b: 'bishop', r: 'rook', q: 'queen', k: 'king' };
+const PIECE_KEYS = { p: 'pieceP', n: 'pieceN', b: 'pieceB', r: 'pieceR', q: 'pieceQ', k: 'pieceK' };
 // Rough value, only used to decide whether a capture/hang is worth mentioning.
 const PIECE_VALUE = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
 
-function pieceName(ch) {
-  return ch ? (PIECE_NAMES[ch.toLowerCase()] || 'piece') : 'piece';
+function pieceName(ch, lang = 'en') {
+  const key = ch ? PIECE_KEYS[ch.toLowerCase()] : null;
+  return _eI18n.t(lang, key || 'pieceGeneric');
 }
 
 // A score is { type: 'cp' | 'mate', value } as reported by the engine, relative
@@ -47,12 +49,12 @@ function scoreToCp(score) {
 
 // Classify the move that was actually played by how much evaluation it gave up
 // versus the engine's best move (both from the mover's point of view).
-function classify(cpLoss) {
-  if (cpLoss <= 20) return { key: 'best', label: 'Best move' };
-  if (cpLoss <= 50) return { key: 'good', label: 'Good move' };
-  if (cpLoss <= 90) return { key: 'inaccuracy', label: 'Inaccuracy' };
-  if (cpLoss <= 200) return { key: 'mistake', label: 'Mistake' };
-  return { key: 'blunder', label: 'Blunder' };
+function classify(cpLoss, lang = 'en') {
+  if (cpLoss <= 20) return { key: 'best', label: _eI18n.t(lang, 'labelBest') };
+  if (cpLoss <= 50) return { key: 'good', label: _eI18n.t(lang, 'labelGood') };
+  if (cpLoss <= 90) return { key: 'inaccuracy', label: _eI18n.t(lang, 'labelInaccuracy') };
+  if (cpLoss <= 200) return { key: 'mistake', label: _eI18n.t(lang, 'labelMistake') };
+  return { key: 'blunder', label: _eI18n.t(lang, 'labelBlunder') };
 }
 
 // Does a piece on `from` attack `to`? Pieces use chesscore's geometry; pawns
@@ -121,29 +123,30 @@ function moveFacts(pos, uci) {
 // Explain why the engine likes `bestUci` from `pos`. `score` is the eval after
 // it, from the side-to-move's perspective. `replyUci` is the opponent's best
 // reply (PV second move), used only to name the expected response.
-function explainBest(pos, bestUci, score, replyUci) {
+function explainBest(pos, bestUci, score, replyUci, lang = 'en') {
   const f = moveFacts(pos, bestUci);
   if (!f) return '';
+  const t = (key, ...args) => _eI18n.t(lang, key, ...args);
   const bits = [];
   if (score && score.type === 'mate') {
-    bits.push(`forces mate in ${Math.abs(score.value)}`);
+    bits.push(t('forcesMateIn', Math.abs(score.value)));
   } else if (f.captured) {
-    bits.push(`captures the ${pieceName(f.captured)}`);
+    bits.push(t('capturesThe', pieceName(f.captured, lang)));
   } else if (f.isCastle) {
-    bits.push('castles the king to safety');
+    bits.push(t('castlesToSafety'));
   } else if (f.promo) {
-    bits.push(`promotes to a ${pieceName(f.promo)}`);
+    bits.push(t('promotesToA', pieceName(f.promo, lang)));
   } else if (f.givesCheck) {
-    bits.push('gives check and keeps the initiative');
+    bits.push(t('givesCheckInitiative'));
   } else {
-    bits.push('keeps the strongest position here');
+    bits.push(t('keepsStrongest'));
   }
-  if (f.givesCheck && bits.length && !/check/.test(bits[0])) bits.push('with check');
+  if (f.givesCheck && bits.length && bits[0] !== t('givesCheckInitiative')) bits.push(t('withCheck'));
 
   let text = `${f.san} — ${bits.join(', ')}.`;
   if (replyUci) {
     const reply = moveFacts(pos2After(pos, bestUci), replyUci);
-    if (reply) text += ` Expect ${reply.san} in reply.`;
+    if (reply) text += ` ${t('expectInReply', reply.san)}`;
   }
   return text;
 }
@@ -157,25 +160,26 @@ function pos2After(pos, uci) {
 // Explain the move that was actually played from `pos`. `bestUci` is the
 // engine's preferred move, `cpLoss` the centipawn loss vs. it (mover's POV).
 // `replyUci` is the opponent's strongest answer to the played move.
-function explainPlayed(pos, playedUci, bestUci, cpLoss, replyUci) {
-  const cls = classify(cpLoss);
+function explainPlayed(pos, playedUci, bestUci, cpLoss, replyUci, lang = 'en') {
+  const cls = classify(cpLoss, lang);
   const f = moveFacts(pos, playedUci);
   if (!f) return { ...cls, text: '' };
+  const t = (key, ...args) => _eI18n.t(lang, key, ...args);
 
   let text;
   if (cls.key === 'best' || cls.key === 'good') {
-    if (f.captured) text = `Wins the ${pieceName(f.captured)}.`;
-    else if (f.givesCheck) text = 'A strong move with check.';
-    else text = 'Solid — right in line with the engine.';
+    if (f.captured) text = t('winsThe', pieceName(f.captured, lang));
+    else if (f.givesCheck) text = t('strongWithCheck');
+    else text = t('solidInLine');
   } else {
     // A weak move: name what it costs, and what the opponent can punish with.
     const reply = replyUci ? moveFacts(pos2After(pos, playedUci), replyUci) : null;
     if (reply && reply.captured && PIECE_VALUE[reply.captured.toLowerCase()] >= 3) {
-      text = `Drops the ${pieceName(reply.captured)} — the opponent can answer ${reply.san}.`;
+      text = t('dropsThe', pieceName(reply.captured, lang), reply.san);
     } else if (reply) {
-      text = `The engine prefers ${sanOf(pos, bestUci)}; ${reply.san} is the tougher reply.`;
+      text = t('enginePrefersTougher', sanOf(pos, bestUci), reply.san);
     } else {
-      text = `The engine prefers ${sanOf(pos, bestUci)}.`;
+      text = t('enginePrefers', sanOf(pos, bestUci));
     }
   }
   return { ...cls, text };

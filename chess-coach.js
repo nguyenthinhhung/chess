@@ -17,6 +17,8 @@
   const Explain = globalThis.ChessExplain;
   const sliceToViewedPly = globalThis.sliceToViewedPly;
   const AiPrompt = globalThis.ChessAiPrompt;
+  const I18n = globalThis.ChessI18n;
+  const t = (key, ...args) => (I18n ? I18n.t(state.lang, key, ...args) : key);
 
   // The Stockfish engine runs in an offscreen document (see background.js /
   // offscreen.js). Content scripts on chess.com can't host the worker because
@@ -76,16 +78,16 @@
   // since the board already shows whose piece is moving. Book move is violet.
   const RANK_COLORS = ['#22ac38', '#2b86d8', '#e0a000']; // green / blue / amber
   const BOOK_COLOR = '#9b59b6';
-  const LEGEND = [
-    { color: BOOK_COLOR, label: 'Book' },
-    { color: RANK_COLORS[0], label: 'Best' },
-    { color: RANK_COLORS[1], label: '2nd' },
-    { color: RANK_COLORS[2], label: '3rd' }
+  const legend = () => [
+    { color: BOOK_COLOR, label: t('legendBook') },
+    { color: RANK_COLORS[0], label: t('legendBest') },
+    { color: RANK_COLORS[1], label: t('legend2nd') },
+    { color: RANK_COLORS[2], label: t('legend3rd') }
   ];
 
   // enabled: the lightbulb toggle. depth: Stockfish search depth. openingId: a
   // POPULAR name to train, or null = auto-detect.
-  const state = { enabled: true, depth: 14, openingId: null, panelMin: false, arrows: 3 };
+  const state = { enabled: true, depth: 14, openingId: null, panelMin: false, arrows: 3, lang: 'en' };
   let lastSig = '';
   let lastArrowSig = '';
 
@@ -383,7 +385,8 @@
       eval: best.score,
       depth: best.depth || state.depth,
       pv: (best.pv || []).slice(0, 8),
-      topMoves: res.lines.slice(0, 3).filter((l) => l.move).map((l) => ({ move: l.move, eval: l.score }))
+      topMoves: res.lines.slice(0, 3).filter((l) => l.move).map((l) => ({ move: l.move, eval: l.score })),
+      lang: state.lang
     };
   }
 
@@ -428,26 +431,26 @@
 
     const key = AiPrompt.cacheKeyFor(data);
     if (explainState.key !== key || explainState.status === 'idle') {
-      return `<div class="cc-prow cc-explain"><button class="cc-explain-btn" data-act="explain">✨ Explain this move</button></div>`;
+      return `<div class="cc-prow cc-explain"><button class="cc-explain-btn" data-act="explain">${esc(t('explainThisMove'))}</button></div>`;
     }
     if (explainState.status === 'running') {
-      return `<div class="cc-prow cc-explain"><span class="cc-chip cc-info">Analysing…</span></div>`;
+      return `<div class="cc-prow cc-explain"><span class="cc-chip cc-info">${esc(t('analysing'))}</span></div>`;
     }
     if (explainState.status === 'error') {
       return `<div class="cc-prow cc-explain">
-        <span class="cc-chip cc-info" title="${esc(explainState.error || '')}">⚠ Explain failed</span>
-        <button class="cc-explain-btn" data-act="explain">Retry</button>
+        <span class="cc-chip cc-info" title="${esc(explainState.error || '')}">${esc(t('explainFailed'))}</span>
+        <button class="cc-explain-btn" data-act="explain">${esc(t('retry'))}</button>
       </div>`;
     }
 
     const d = explainState.data;
     const stars = '★'.repeat(d.difficulty) + '☆'.repeat(5 - d.difficulty);
     return `<div class="cc-prow cc-explain-result">
-      <div class="cc-erow"><b>💡 Why</b> ${esc(d.whyBest || d.summary || '')}</div>
-      ${d.strategy ? `<div class="cc-erow"><b>♟ Strategy</b> ${esc(d.strategy)}</div>` : ''}
-      ${d.tactics ? `<div class="cc-erow"><b>⚔ Tactics</b> ${esc(d.tactics)}</div>` : ''}
-      ${d.nextPlan && d.nextPlan.length ? `<div class="cc-erow"><b>🎯 Plan</b> ${d.nextPlan.map(esc).join(' → ')}</div>` : ''}
-      ${d.commonMistake ? `<div class="cc-erow"><b>⚠ Mistake</b> ${esc(d.commonMistake)}</div>` : ''}
+      <div class="cc-erow"><b>${esc(t('why'))}</b> ${esc(d.whyBest || d.summary || '')}</div>
+      ${d.strategy ? `<div class="cc-erow"><b>${esc(t('strategy'))}</b> ${esc(d.strategy)}</div>` : ''}
+      ${d.tactics ? `<div class="cc-erow"><b>${esc(t('tactics'))}</b> ${esc(d.tactics)}</div>` : ''}
+      ${d.nextPlan && d.nextPlan.length ? `<div class="cc-erow"><b>${esc(t('plan'))}</b> ${d.nextPlan.map(esc).join(' → ')}</div>` : ''}
+      ${d.commonMistake ? `<div class="cc-erow"><b>${esc(t('mistake'))}</b> ${esc(d.commonMistake)}</div>` : ''}
       <div class="cc-erow cc-diff">${stars}</div>
     </div>`;
   }
@@ -602,8 +605,8 @@
     // Show only openings for the side you're playing; always keep the current
     // pick visible even if it belongs to the other side.
     const list = all.filter((o) => o.side === userSide || o.name === state.openingId);
-    const sideLabel = userSide === 'b' ? 'Black' : 'White';
-    let opts = `<option value=""${!state.openingId ? ' selected' : ''}>Auto-detect (${sideLabel})</option>`;
+    const sideLabel = userSide === 'b' ? t('sideBlack') : t('sideWhite');
+    let opts = `<option value=""${!state.openingId ? ' selected' : ''}>${esc(t('autoDetect', sideLabel))}</option>`;
     for (const o of list) {
       opts += `<option value="${esc(o.name)}"${state.openingId === o.name ? ' selected' : ''}>${esc(o.name)}</option>`;
     }
@@ -624,16 +627,16 @@
     }
 
     if (engineDead) {
-      return chips + `<span class="cc-chip cc-info" title="Reload the page to retry">⚠ Stockfish stopped</span>`;
+      return chips + `<span class="cc-chip cc-info" title="${esc(t('reloadToRetry'))}">${esc(t('stockfishStopped'))}</span>`;
     }
     if (!engineAvailable()) {
-      return chips + `<span class="cc-chip cc-info">Stockfish unavailable</span>`;
+      return chips + `<span class="cc-chip cc-info">${esc(t('stockfishUnavailable'))}</span>`;
     }
 
     const haveEngine = engineState.status === 'done' && engineState.sig === curSig(uci) && engineState.result;
     if (!haveEngine) {
-      const msg = engineState.status === 'error' ? '⚠ Engine error' : `Analysing… (d${state.depth})`;
-      return chips + `<span class="cc-chip cc-info">${msg}</span>`;
+      const msg = engineState.status === 'error' ? t('engineError') : t('analysingDepth', state.depth);
+      return chips + `<span class="cc-chip cc-info">${esc(msg)}</span>`;
     }
 
     const res = engineState.result;
@@ -644,7 +647,7 @@
     if (best && best.move) {
       const san = Explain.sanOf(res.pos, best.move);
       const evalText = Explain.formatScore(best.score, !userToMove);
-      const expl = Explain.explainBest(res.pos, best.move, best.score, best.pv && best.pv[1]);
+      const expl = Explain.explainBest(res.pos, best.move, best.score, best.pv && best.pv[1], state.lang);
       const icon = userToMove ? '★' : '⚔';
       chips += `<span class="cc-chip ${moveCls}" title="${esc(expl || '')}">${icon} <b>${esc(san)}</b> ${esc(evalText)}</span>`;
     }
@@ -657,7 +660,7 @@
     if (rep.length) {
       const replyCls = userToMove ? 'cc-opp' : 'cc-good';
       const icon = userToMove ? '⚔' : '★';
-      const label = userToMove ? "Opponent's reply" : 'Your reply';
+      const label = userToMove ? t('opponentsReply') : t('yourReply');
       const sans = rep.slice(0, state.arrows).map((l) => esc(Explain.sanOf(res.replyPos, l.move)));
       chips += `<span class="cc-chip ${replyCls}" title="${esc(label)}">${icon} ${sans.join(' · ')}</span>`;
     }
@@ -668,7 +671,7 @@
   // tiny and clear of the clock. The opening name lives in the panel header.
   function buildBar() {
     const lit = state.enabled;
-    return `<button class="cc-bulb${lit ? ' cc-bulb--on' : ''}" data-act="toggle" title="${lit ? 'Turn coaching off' : 'Turn coaching on'}" aria-label="Toggle coaching">
+    return `<button class="cc-bulb${lit ? ' cc-bulb--on' : ''}" data-act="toggle" title="${esc(lit ? t('turnCoachingOff') : t('turnCoachingOn'))}" aria-label="${esc(t('toggleCoaching'))}">
       <svg class="cc-bulb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/>
         <path d="M9 18h6"/>
@@ -681,26 +684,27 @@
   function buildPanel(ctx, uci) {
     const min = state.panelMin;
     const opening = detectOpening(uci);
-    const titleText = opening ? `${opening.eco} · ${opening.name}` : (OPENINGS ? 'Out of book' : 'Coach');
+    const titleText = opening ? `${opening.eco} · ${opening.name}` : (OPENINGS ? t('outOfBook') : t('coach'));
+    const minMaxLabel = min ? t('expand') : t('minimize');
     const header = `<div class="cc-phead">
       <span class="cc-ptitle" title="${esc(titleText)}">♞ ${esc(titleText)}</span>
-      <button class="cc-pbtn" data-act="panelmin" title="${min ? 'Expand' : 'Minimize'}" aria-label="${min ? 'Expand' : 'Minimize'}">${min ? '▢' : '—'}</button>
+      <button class="cc-pbtn" data-act="panelmin" title="${esc(minMaxLabel)}" aria-label="${esc(minMaxLabel)}">${min ? '▢' : '—'}</button>
     </div>`;
     if (min) return header;
-    const legend = LEGEND.map((it) =>
+    const legendHtml = legend().map((it) =>
       `<span class="cc-lg"><i style="background:${it.color}"></i>${esc(it.label)}</span>`
     ).join('');
 
     const userSide = mapSide(bridgePlayingAs) || detectUserSide() || 'w';
     return header + `<div class="cc-pbody">
       <div class="cc-prow">${openingPicker(userSide)}</div>
-      <label class="cc-prow cc-depth">Depth <output data-cc-depth-val>${state.depth}</output>
+      <label class="cc-prow cc-depth">${esc(t('depth'))} <output data-cc-depth-val>${state.depth}</output>
         <input type="range" min="6" max="22" step="1" value="${state.depth}" data-cc-depth></label>
-      <label class="cc-prow cc-depth">Arrows <output data-cc-arrows-val>${state.arrows}</output>
+      <label class="cc-prow cc-depth">${esc(t('arrows'))} <output data-cc-arrows-val>${state.arrows}</output>
         <input type="range" min="${ARROW_MIN}" max="${ARROW_MAX}" step="1" value="${state.arrows}" data-cc-arrows></label>
       <div class="cc-prow cc-results">${resultsHtml(uci)}</div>
       ${explainHtml(uci)}
-      <div class="cc-prow cc-legend">${legend}</div>
+      <div class="cc-prow cc-legend">${legendHtml}</div>
     </div>`;
   }
 
@@ -857,13 +861,22 @@
   }
 
   try {
-    chrome.storage.local.get(['ccEnabled', 'ccDepth', 'ccOpening', 'ccPanelMin', 'ccArrows'], (o) => {
+    chrome.storage.local.get(['ccEnabled', 'ccDepth', 'ccOpening', 'ccPanelMin', 'ccArrows', 'ccLanguage'], (o) => {
       state.enabled = o.ccEnabled !== false;
       state.depth = Math.max(6, Math.min(22, o.ccDepth || 14));
       state.openingId = o.ccOpening || null;
       state.panelMin = !!o.ccPanelMin;
       state.arrows = Math.max(ARROW_MIN, Math.min(ARROW_MAX, o.ccArrows || 3));
+      state.lang = o.ccLanguage === 'vi' ? 'vi' : 'en';
       start();
+    });
+    // The language lives on the options page, a separate context — pick up a
+    // change immediately instead of requiring a chess.com page reload.
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local' || !changes.ccLanguage) return;
+      state.lang = changes.ccLanguage.newValue === 'vi' ? 'vi' : 'en';
+      lastSig = '';
+      render(detectContext());
     });
   } catch {
     start();

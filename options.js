@@ -39,3 +39,16 @@ $('saveGemini').addEventListener('click', () => {
 geminiKeyInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') $('saveGemini').click();
 });
+
+const langEn = $('langEn');
+const langVi = $('langVi');
+
+chrome.storage.local.get('ccLanguage', (state) => {
+  (state.ccLanguage === 'vi' ? langVi : langEn).checked = true;
+});
+
+for (const radio of [langEn, langVi]) {
+  radio.addEventListener('change', () => {
+    if (radio.checked) chrome.storage.local.set({ ccLanguage: radio.value });
+  });
+}
