@@ -16,7 +16,8 @@
     .sub { color: #666; margin-bottom: 24px; font-size: 14px; }
     label { display: block; font-weight: 500; margin: 16px 0 6px; font-size: 14px; }
     input[type="text"],
-    input[type="password"] {
+    input[type="password"],
+    select {
       width: 100%;
       padding: 9px 11px;
       box-sizing: border-box;
@@ -24,9 +25,12 @@
       font-size: 13px;
       border: 1px solid #ccc;
       border-radius: 4px;
+      background: #fff;
+      color: #222;
     }
     input[type="text"]:focus,
-    input[type="password"]:focus { outline: none; border-color: #759900; }
+    input[type="password"]:focus,
+    select:focus { outline: none; border-color: #759900; }
     .checkbox-row {
       display: flex;
       align-items: center;
@@ -95,32 +99,33 @@
 
   <hr style="margin: 32px 0; border: 0; border-top: 1px solid #eee;">
 
-  <h1>Gemini Coach (optional)</h1>
-  <p class="sub">Adds an AI-written explanation of Stockfish's best move — strategy, tactics, and a short plan — on top of the raw evaluation.</p>
+  <h1>AI Coach (optional)</h1>
+  <p class="sub">Adds an AI-written explanation of Stockfish's best move — strategy, tactics, and a short plan — on top of the raw evaluation. Each provider's key is saved separately, so switching providers never loses the other one's key.</p>
 
-  <label for="geminiKey">Gemini API key</label>
-  <input id="geminiKey" type="password" placeholder="AIza..." autocomplete="off">
-  <p class="hint">
-    Get a free key at
-    <a href="https://aistudio.google.com/app/apikey" target="_blank">aistudio.google.com/app/apikey</a>.
-  </p>
+  <label for="aiProvider">Provider</label>
+  <select id="aiProvider"></select>
 
-  <label for="geminiModel">Model</label>
-  <input id="geminiModel" type="text" placeholder="gemini-2.5-flash" autocomplete="off">
+  <label for="aiKey">API key</label>
+  <input id="aiKey" type="password" placeholder="" autocomplete="off">
+  <p class="hint">Get a free key at <a id="aiKeyLink" href="#" target="_blank">—</a>.</p>
+
+  <label for="aiModel">Model</label>
+  <input id="aiModel" type="text" placeholder="" autocomplete="off">
 
   <div>
-    <button id="saveGemini">Save</button>
-    <span id="savedGemini"></span>
+    <button id="saveAi">Save</button>
+    <span id="savedAi"></span>
   </div>
 
   <hr style="margin: 32px 0; border: 0; border-top: 1px solid #eee;">
 
   <h1>Language</h1>
-  <p class="sub">Language used for the coach panel and move explanations (both the built-in ones and Gemini's).</p>
+  <p class="sub">Language used for the coach panel and move explanations (both the built-in ones and the AI coach's).</p>
 
   <label class="checkbox-row"><input type="radio" name="lang" id="langEn" value="en">English</label>
   <label class="checkbox-row"><input type="radio" name="lang" id="langVi" value="vi">Tiếng Việt</label>
 
+  <script src="ai/providers.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

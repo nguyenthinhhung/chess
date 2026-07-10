@@ -1,8 +1,12 @@
 // Pure ai/* modules (see plan.md) — loaded here, not in offscreen.js, since
 // they call fetch() directly rather than going through the Stockfish worker.
-importScripts('i18n.js', 'ai/prompt-builder.js', 'ai/response-parser.js', 'ai/gemini-service.js');
+importScripts(
+  'i18n.js', 'ai/prompt-builder.js', 'ai/response-parser.js', 'ai/providers.js',
+  'ai/gemini-service.js', 'ai/openai-compatible-service.js', 'ai/ai-service.js'
+);
 const ChessAiPrompt = globalThis.ChessAiPrompt;
-const ChessAiGemini = globalThis.ChessAiGemini;
+const ChessAiProviders = globalThis.ChessAiProviders;
+const ChessAiService = globalThis.ChessAiService;
 
 const LICHESS_IMPORT_URL = 'https://lichess.org/api/import';
 const RATE_LIMIT_MS = 3500;
@@ -111,23 +115,34 @@ async function engineStop() {
   try { if (await chrome.offscreen.hasDocument()) await chrome.offscreen.closeDocument(); } catch {}
 }
 
-// ---- Gemini move explanations (see plan.md Phases 1-5, 7) ------------------
-// Cached in chrome.storage.local keyed by FEN+bestMove+depth (Phase 5): once a
-// position has been explained, re-analysing it never calls Gemini again.
+// ---- AI move explanations (see plan.md Phases 1-5, 7) ----------------------
+// Cached in chrome.storage.local keyed by provider+FEN+bestMove+depth (Phase
+// 5): once a position has been explained by a given provider, re-analysing it
+// never calls that provider again.
 const AI_CACHE_PREFIX = 'ccAiCache:';
 
-async function getGeminiSettings() {
-  const { geminiApiKey, geminiModel } = await chrome.storage.local.get(['geminiApiKey', 'geminiModel']);
-  return { apiKey: geminiApiKey || '', model: geminiModel || ChessAiGemini.DEFAULT_MODEL };
+// aiApiKeys/aiModels hold one entry per provider (see options.js) so switching
+// providers never loses the other one's saved key. geminiApiKey/geminiModel
+// are the pre-multi-provider settings, kept as a fallback for users who
+// configured Gemini before this existed and haven't reopened Settings since.
+async function getAiSettings() {
+  const { aiProvider, aiApiKeys, aiModels, geminiApiKey, geminiModel } =
+    await chrome.storage.local.get(['aiProvider', 'aiApiKeys', 'aiModels', 'geminiApiKey', 'geminiModel']);
+  const provider = (aiProvider && ChessAiProviders.AI_PROVIDERS[aiProvider])
+    ? aiProvider : ChessAiProviders.DEFAULT_AI_PROVIDER;
+  const legacy = provider === 'gemini' ? { apiKey: geminiApiKey, model: geminiModel } : {};
+  const apiKey = (aiApiKeys && aiApiKeys[provider]) || legacy.apiKey || '';
+  const model = (aiModels && aiModels[provider]) || legacy.model || '';
+  return { provider, apiKey, model };
 }
 
 async function explainWithCache(data) {
-  const cacheKey = AI_CACHE_PREFIX + ChessAiPrompt.cacheKeyFor(data);
+  const { provider, apiKey, model } = await getAiSettings();
+  const cacheKey = `${AI_CACHE_PREFIX}${provider}:${ChessAiPrompt.cacheKeyFor(data)}`;
   const cached = await chrome.storage.local.get(cacheKey);
   if (cached[cacheKey]) return cached[cacheKey];
 
-  const { apiKey, model } = await getGeminiSettings();
-  const result = await ChessAiGemini.explainMove(data, { apiKey, model });
+  const result = await ChessAiService.explainMove(data, { apiKey, model, provider });
   try { await chrome.storage.local.set({ [cacheKey]: result }); } catch {}
   return result;
 }
