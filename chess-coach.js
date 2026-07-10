@@ -420,18 +420,67 @@
   }
 
   // ---- Gemini explanation (on demand) -----------------------------------------
+  // SAN of a move including a trailing '+' when it gives check — our core SAN
+  // omits check/mate marks, but they're worth grounding so the model can say
+  // "with check" only when it's actually true.
+  function sanChecked(pos, uci) {
+    const f = Explain.moveFacts(pos, uci);
+    if (!f) return Explain.sanOf(pos, uci);
+    return f.san + (f.givesCheck ? '+' : '');
+  }
+
+  // Replay a UCI line from `startPos` and return its moves in SAN (with check
+  // marks). moveFacts reads the pre-move position without mutating it, so the
+  // facts are computed before applyUci advances the board.
+  function lineToSan(startPos, uciLine) {
+    const pos = clonePos(startPos);
+    const out = [];
+    for (const u of uciLine || []) {
+      const f = Explain.moveFacts(pos, u);
+      if (!applyUci(pos, u)) break;
+      out.push(f ? f.san + (f.givesCheck ? '+' : '') : u);
+    }
+    return out;
+  }
+
+  // A plain-English, board-grounded description of a move — "White knight
+  // g1–f3, capturing the bishop, giving check". Built from moveFacts (which
+  // reads the real board), so the piece names are always correct; this is what
+  // we hand Gemini instead of a bare UCI string, whose piece identity it would
+  // otherwise have to (and often does wrongly) infer from the FEN.
+  function describeMove(uci, facts) {
+    const from = uci.slice(0, 2), to = uci.slice(2, 4);
+    const white = facts.pieceChar === facts.pieceChar.toUpperCase();
+    const color = white ? 'White' : 'Black';
+    let s = facts.isCastle
+      ? `${color} castles (${facts.san})`
+      : `${color} ${Explain.pieceName(facts.pieceChar, 'en')} ${from}–${to}`;
+    if (facts.captured) s += `, capturing the ${Explain.pieceName(facts.captured, 'en')}`;
+    if (facts.promo) s += `, promoting to a ${Explain.pieceName(facts.promo, 'en')}`;
+    if (facts.givesCheck) s += ', giving check';
+    return s;
+  }
+
   // Shape data for the AI service from the already-computed engine result —
-  // never the raw Stockfish log (see plan.md Phase 1).
+  // never the raw Stockfish log (see plan.md Phase 1). Moves are pre-resolved
+  // to SAN and an explicit piece description here (from the real board) so the
+  // model never has to read piece identities out of the FEN itself.
   function buildExplainInput(res) {
     const best = res.lines && res.lines[0];
     if (!best || !best.move) return null;
+    const pos = res.pos;
+    const facts = Explain.moveFacts(pos, best.move);
     return {
-      fen: toFen(res.pos),
+      fen: toFen(pos),
       bestMove: best.move,
+      bestSan: sanChecked(pos, best.move),
+      moveDescription: facts ? describeMove(best.move, facts) : null,
       eval: best.score,
       depth: best.depth || state.depth,
       pv: (best.pv || []).slice(0, 8),
-      topMoves: res.lines.slice(0, 3).filter((l) => l.move).map((l) => ({ move: l.move, eval: l.score })),
+      pvSan: lineToSan(pos, best.pv || []).slice(0, 8),
+      topMoves: res.lines.slice(0, 4).filter((l) => l.move)
+        .map((l) => ({ move: l.move, san: sanChecked(pos, l.move), eval: l.score })),
       lang: state.lang
     };
   }
@@ -490,14 +539,15 @@
     }
 
     const d = explainState.data;
-    const stars = '★'.repeat(d.difficulty) + '☆'.repeat(5 - d.difficulty);
+    const lineHtml = (d.line && d.line.length)
+      ? d.line.map((s) => `<span class="cc-lstep">${esc(s)}</span>`).join('')
+      : '';
     return `<div class="cc-prow cc-explain-result">
-      <div class="cc-erow"><b>${esc(t('why'))}</b> ${esc(d.whyBest || d.summary || '')}</div>
-      ${d.strategy ? `<div class="cc-erow"><b>${esc(t('strategy'))}</b> ${esc(d.strategy)}</div>` : ''}
-      ${d.tactics ? `<div class="cc-erow"><b>${esc(t('tactics'))}</b> ${esc(d.tactics)}</div>` : ''}
-      ${d.nextPlan && d.nextPlan.length ? `<div class="cc-erow"><b>${esc(t('plan'))}</b> ${d.nextPlan.map(esc).join(' → ')}</div>` : ''}
-      ${d.commonMistake ? `<div class="cc-erow"><b>${esc(t('mistake'))}</b> ${esc(d.commonMistake)}</div>` : ''}
-      <div class="cc-erow cc-diff">${stars}</div>
+      ${d.assessment ? `<div class="cc-erow"><b>${esc(t('assessment'))}</b> ${esc(d.assessment)}</div>` : ''}
+      ${d.whyBest ? `<div class="cc-erow"><b>${esc(t('bestMoveLabel'))}</b> ${esc(d.whyBest)}</div>` : ''}
+      ${d.plan ? `<div class="cc-erow"><b>${esc(t('planLabel'))}</b> ${esc(d.plan)}</div>` : ''}
+      ${lineHtml ? `<div class="cc-erow"><b>${esc(t('lineLabel'))}</b><span class="cc-lsteps">${lineHtml}</span></div>` : ''}
+      ${d.alternatives ? `<div class="cc-erow"><b>${esc(t('alternativesLabel'))}</b> ${esc(d.alternatives)}</div>` : ''}
     </div>`;
   }
 

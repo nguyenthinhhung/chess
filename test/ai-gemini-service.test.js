@@ -13,7 +13,7 @@ function fakeFetch(reply) {
 test('toGeminiSchema drops optional properties and keeps required ones', () => {
   const sanitized = toGeminiSchema(EXPLAIN_SCHEMA);
   assert.deepEqual(Object.keys(sanitized.properties).sort(), [...EXPLAIN_SCHEMA.required].sort());
-  assert.equal(sanitized.properties.nextPlan.type, 'array');
+  assert.equal(sanitized.properties.line.type, 'array');
 });
 
 test('explainMove throws without an API key', async () => {
@@ -30,11 +30,11 @@ test('explainMove throws on cost-control skip instead of calling the network', a
 });
 
 test('explainMove parses a successful Gemini reply', async () => {
-  const reply = { summary: 's', whyBest: 'w', strategy: 'st', tactics: 'ta', nextPlan: ['p1'], commonMistake: 'm', difficulty: 2 };
+  const reply = { assessment: 's', whyBest: 'w', plan: 'p', line: ['Nf3', 'Nc6'], alternatives: 'alt' };
   const data = { fen: 'fen', bestMove: 'e2e4', depth: 16, eval: { type: 'cp', value: 40 }, pv: ['e2e4'], topMoves: [] };
   const result = await explainMove(data, { apiKey: 'k', fetchImpl: fakeFetch(reply) });
   assert.equal(result.whyBest, 'w');
-  assert.deepEqual(result.nextPlan, ['p1']);
+  assert.deepEqual(result.line, ['Nf3', 'Nc6']);
 });
 
 test('explainMove surfaces a non-OK HTTP response', async () => {

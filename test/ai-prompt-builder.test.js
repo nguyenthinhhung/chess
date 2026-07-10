@@ -44,7 +44,28 @@ test('buildExplainPrompt embeds FEN, best move, and top moves', () => {
     pv: ['g8f6', 'b1c3'],
     topMoves: [{ move: 'g8f6', eval: { type: 'cp', value: 30 } }]
   });
-  assert.match(system, /Do NOT invent variations/);
+  assert.match(system, /Ground every statement ONLY in the data given/);
   assert.match(user, /g8f6/);
-  assert.match(user, /Top moves/);
+  assert.match(user, /Candidate moves/);
+});
+
+test('buildExplainPrompt prefers SAN + piece description over raw UCI', () => {
+  const { system, user } = buildExplainPrompt({
+    fen: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1',
+    bestMove: 'g8f6',
+    bestSan: 'Nf6',
+    moveDescription: 'Black knight g8–f6',
+    eval: { type: 'cp', value: 30 },
+    depth: 16,
+    pv: ['g8f6', 'b1c3'],
+    pvSan: ['Nf6', 'Nc3'],
+    topMoves: [{ move: 'g8f6', san: 'Nf6', eval: { type: 'cp', value: 30 } }]
+  });
+  // The best move surfaces as SAN + the board-grounded piece description...
+  assert.match(user, /Best move: Nf6 \(Black knight g8–f6\)/);
+  // ...the PV and top moves are SAN, not raw coordinates...
+  assert.match(user, /Nf6 Nc3/);
+  assert.doesNotMatch(user, /b1c3/);
+  // ...and the model is told not to re-derive pieces from the FEN.
+  assert.match(system, /re-derive a piece from the FEN/i);
 });
