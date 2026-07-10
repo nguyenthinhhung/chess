@@ -57,34 +57,15 @@ function classify(cpLoss, lang = 'en') {
   return { key: 'blunder', label: _eI18n.t(lang, 'labelBlunder') };
 }
 
-// Does a piece on `from` attack `to`? Pieces use chesscore's geometry; pawns
-// are handled here because chesscore only resolves pawn pushes, not attacks.
-function attacks(board, from, to) {
-  const p = board[from];
-  if (p === '.' || from === to) return false;
-  if (p.toLowerCase() === 'p') {
-    const white = p === 'P';
-    const ff = from % 8, fr = (from / 8) | 0;
-    const tf = to % 8, tr = (to / 8) | 0;
-    return Math.abs(tf - ff) === 1 && tr - fr === (white ? 1 : -1);
-  }
-  return _ecc.pieceReaches(board, from, to);
-}
-
-// Is `color` ('w'|'b') to-move king currently attacked on this board?
-function kingInCheck(board, color) {
-  const king = color === 'w' ? 'K' : 'k';
-  const kingSq = board.indexOf(king);
-  if (kingSq < 0) return false;
-  const enemyIsWhite = color === 'b';
-  for (let i = 0; i < 64; i++) {
-    const pc = board[i];
-    if (pc === '.') continue;
-    if ((pc === pc.toUpperCase()) !== enemyIsWhite) continue;
-    if (attacks(board, i, kingSq)) return true;
-  }
-  return false;
-}
+// Attack geometry and check detection live in chesscore.js now (applySan
+// needs them to disambiguate SAN by legality); re-exported here so existing
+// callers and tests keep working. The local names are underscored because in
+// the content-script world all these files share one global scope — chesscore
+// already declared global functions named attacks/kingInCheck, and a top-level
+// `const attacks` here would be a redeclaration SyntaxError that kills this
+// whole file (see test/content-script-world.test.js).
+const _attacks = _ecc.attacks;
+const _kingInCheck = _ecc.kingInCheck;
 
 function clonePos(p) {
   return { board: p.board.slice(), turn: p.turn, castling: { ...p.castling }, ep: p.ep };
@@ -108,7 +89,7 @@ function moveFacts(pos, uci) {
   const clone = clonePos(pos);
   const san = _ecc.applyUci(clone, uci); // mutates clone, leaves pos intact
   if (!san) return null;
-  const givesCheck = kingInCheck(clone.board, clone.turn);
+  const givesCheck = _kingInCheck(clone.board, clone.turn);
 
   return {
     san,
@@ -193,7 +174,8 @@ function sanOf(pos, uci) {
 
 const _eExports = {
   pieceName, formatScore, scoreToCp, classify,
-  attacks, kingInCheck, moveFacts, explainBest, explainPlayed, sanOf
+  attacks: _attacks, kingInCheck: _kingInCheck,
+  moveFacts, explainBest, explainPlayed, sanOf
 };
 if (_eIsNode) {
   module.exports = _eExports;

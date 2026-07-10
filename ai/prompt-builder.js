@@ -51,6 +51,14 @@ function cacheKeyFor(data) {
   return `${data.fen}|${data.bestMove}|${data.depth || 0}|${data.lang || 'en'}`;
 }
 
+// The FEN's active-color field, spelled out — handed to Gemini as an explicit
+// fact rather than making it re-derive "whose move is it" from the raw FEN
+// every time, which is an easy thing for a model to get backwards.
+function sideToMoveName(fen) {
+  const active = String(fen || '').split(' ')[1];
+  return active === 'b' ? 'Black' : 'White';
+}
+
 function buildExplainPrompt(data) {
   const topMoves = (data.topMoves || [])
     .map((m, i) => `${i + 1}. ${m.move} (${fmtEval(m.eval)})`)
@@ -60,6 +68,7 @@ function buildExplainPrompt(data) {
   const system = [
     'You are a professional chess coach.',
     'Do NOT invent variations. Only explain using the supplied Stockfish analysis.',
+    'The "Side to move" field is ground truth — never say the other color is moving.',
     'Keep the explanation under 180 words total across all fields.',
     'Audience: a 1200 Elo player.',
     langName ? `Write every text field in ${langName}, including move descriptions.` : null,
@@ -68,6 +77,7 @@ function buildExplainPrompt(data) {
 
   const user = [
     `Position (FEN): ${data.fen}`,
+    `Side to move: ${sideToMoveName(data.fen)}`,
     `Best move: ${data.bestMove}`,
     data.playedMove ? `Move actually played: ${data.playedMove}` : null,
     `Evaluation: ${fmtEval(data.eval)}`,

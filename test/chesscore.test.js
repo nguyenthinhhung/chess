@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { createPosition, applySan, applyUci, toFen, replay } = require('../chesscore.js');
+const { createPosition, applySan, applyUci, toFen, fromFen, replay } = require('../chesscore.js');
 
 test('applySan: Italian opening yields the right UCI + turn flips', () => {
   const pos = createPosition();
@@ -68,4 +68,40 @@ test('toFen: start position', () => {
     toFen(createPosition()),
     'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
   );
+});
+
+test('applySan: undisambiguated SAN resolves away from the pinned piece', () => {
+  // White: Ke1, Ng1 (pinned along rank 1 by the black rook on h1), Nd2.
+  // Both knights geometrically reach f3, and g1 has the lower square index,
+  // so geometry alone would pick the pinned knight; SAN says plain "Nf3"
+  // because only the d2 knight can legally go there.
+  const pos = fromFen('4k3/8/8/8/8/8/3N4/4K1Nr w - - 0 1');
+  assert.equal(applySan(pos, 'Nf3'), 'd2f3');
+});
+
+test('applySan: pawn-capture SAN with no pawn on the from-square fails', () => {
+  // "dxe5" from the start position: there is no white pawn on d4.
+  const pos = createPosition();
+  assert.equal(applySan(pos, 'dxe5'), null);
+});
+
+test('fromFen: round-trips toFen through a real game position', () => {
+  const played = replay(['e4', 'c5', 'Nf3', 'd6', 'd4', 'cxd4']);
+  const fen = toFen(played);
+  const parsed = fromFen(fen);
+  assert.equal(toFen(parsed), fen);
+  assert.equal(parsed.turn, 'w');
+});
+
+test('fromFen: reads turn, partial castling rights, and the ep square', () => {
+  const pos = fromFen('rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR b Kq d6 0 2');
+  assert.equal(pos.turn, 'b');
+  assert.deepEqual(pos.castling, { K: true, Q: false, k: false, q: true });
+  assert.equal(toFen(pos).split(' ')[3], 'd6');
+});
+
+test('fromFen: rejects malformed input', () => {
+  assert.equal(fromFen(null), null);
+  assert.equal(fromFen('not a fen'), null);
+  assert.equal(fromFen('8/8/8 w - - 0 1'), null); // wrong row count
 });

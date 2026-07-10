@@ -12,7 +12,11 @@
   const applySan = globalThis.applySan;
   const applyUci = globalThis.applyUci;
   const toFen = globalThis.toFen;
-  if (!createPosition || !applySan) return; // core failed to load
+  const fromFen = globalThis.fromFen;
+  // Explain is load-bearing for the whole panel (resultsHtml calls it
+  // unconditionally) — if any dependency failed to load, don't half-run with
+  // book arrows but a dead engine; disable the coach outright.
+  if (!createPosition || !applySan || !globalThis.ChessExplain) return;
 
   const Explain = globalThis.ChessExplain;
   const sliceToViewedPly = globalThis.sliceToViewedPly;
@@ -94,6 +98,7 @@
   let bridgeSans = null;
   let bridgePlayingAs = null;
   let bridgePlyViewed = null; // ply currently on screen; null/out-of-range = end of game (live play)
+  let bridgeFen = null; // chess.com's own getFEN() for the on-screen position — ground truth, see buildView()
 
   // openings.json, lazily fetched the first time we land on a coached surface.
   let OPENINGS = null;
@@ -102,7 +107,7 @@
 
   //   status: 'idle' | 'running' | 'done' | 'error'
   const engineState = { sig: null, status: 'idle', result: null };
-  let pendingUci = null;
+  let pendingView = null;
 
   // Gemini explanation of the current best move, fetched on demand (user
   // clicks "Explain") — never automatically, see plan.md Phase 7 cost control.
@@ -130,6 +135,7 @@
     bridgeSans = Array.isArray(d.sans) ? d.sans : [];
     bridgePlayingAs = d.playingAs ?? null;
     bridgePlyViewed = typeof d.plyViewed === 'number' ? d.plyViewed : null;
+    bridgeFen = typeof d.fen === 'string' ? d.fen : null;
     lastSig = '';
     schedule(50);
   });
@@ -197,23 +203,60 @@
     );
   }
 
-  // ---- moves -----------------------------------------------------------------
-  function sanToUci(sans) {
+  // ---- position view ----------------------------------------------------------
+  const clonePos = (p) => ({ board: p.board.slice(), turn: p.turn, castling: { ...p.castling }, ep: p.ep });
+
+  // Board, turn and castling only. En passant is skipped on purpose: our toFen
+  // records the ep square after every double push, while chess.com's FEN may
+  // list it only when a capture is actually possible — comparing that field
+  // would flag a phantom "desync" on ordinary pawn moves and stall the coach
+  // for a whole ply. Halfmove/fullmove counters we don't track at all.
+  const fenCore = (fen) => (typeof fen === 'string' ? fen.split(' ').slice(0, 3).join(' ') : null);
+
+  let lastDesyncWarn = '';
+
+  // One consistent description of the position to coach, computed per render:
+  //   uci    — the viewed moves replayed from the start (short if parsing broke)
+  //   pos    — the position to analyze
+  //   fen    — its FEN: the engine input and the analysis cache key
+  //   synced — our replay provably matches the live board, so move-list-derived
+  //            features (the opening book) can be trusted
+  //
+  // The SAN replay can go wrong two ways: applySan fails outright on a move
+  // (uci comes up short), or — worse — resolves an ambiguous SAN to the wrong
+  // piece and silently corrupts every later position. Either way Stockfish
+  // would confidently describe a board that isn't the one on screen ("gives
+  // check" when it doesn't, wrong side to move). So the replay is verified
+  // against chess.com's own getFEN() (ground truth, forwarded by the bridge);
+  // on any disagreement the coach analyzes THAT FEN directly instead — engine
+  // arrows/eval/explain keep working, only book hints pause. Returns null only
+  // when the replay broke AND no ground-truth FEN is available.
+  function buildView() {
+    const viewedSans = sliceToViewedPly ? sliceToViewedPly(bridgeSans || [], bridgePlyViewed) : (bridgeSans || []);
     const pos = createPosition();
     const uci = [];
-    for (const s of sans) {
+    let parseOk = true;
+    for (const s of viewedSans) {
       const u = applySan(pos, s);
-      if (!u) break;
+      if (!u) { parseOk = false; break; }
       uci.push(u);
     }
-    return uci;
-  }
+    const real = fenCore(bridgeFen);
+    if (parseOk && (!real || fenCore(toFen(pos)) === real)) {
+      return { uci, pos, fen: toFen(pos), synced: true };
+    }
 
-  // Replay a UCI list and return the resulting position.
-  function replayMoves(uci) {
-    const pos = createPosition();
-    for (const u of uci) { if (!applyUci(pos, u)) break; }
-    return pos;
+    const warnKey = (bridgeFen || 'no-fen') + '@' + viewedSans.length;
+    if (warnKey !== lastDesyncWarn) {
+      lastDesyncWarn = warnKey;
+      console.warn("[chess-coach] move-list replay does not match the live board — coaching from chess.com's FEN", {
+        parseOk, failedAt: parseOk ? null : viewedSans[uci.length],
+        ours: fenCore(toFen(pos)), real, plyViewed: bridgePlyViewed
+      });
+    }
+    const fallback = bridgeFen && fromFen ? fromFen(bridgeFen) : null;
+    if (!fallback) return null;
+    return { uci, pos: fallback, fen: toFen(fallback), synced: false };
   }
 
   // ---- openings (ECO) --------------------------------------------------------
@@ -305,11 +348,13 @@
   }
 
   // ---- engine (continuous, bot/analysis only) --------------------------------
-  function curSig(uci) { return state.depth + ':' + state.arrows + '@' + uci.join(','); }
+  // Keyed by the position's FEN (not the move order) — transpositions share one
+  // search, and the FEN-fallback view (see buildView) needs no move list at all.
+  function curSig(view) { return state.depth + ':' + state.arrows + '@' + view.fen; }
 
-  function maybeAnalyze(uci) {
+  function maybeAnalyze(view) {
     if (engineDead || !engineAvailable() || !Explain) return;
-    const sig = curSig(uci);
+    const sig = curSig(view);
     // Already running, done, OR errored for this exact position+depth — leave it
     // be. Critically, a failed search must NOT be retried for the same position:
     // doing so loops render→runEngine→error→render and respawns the Stockfish
@@ -317,21 +362,19 @@
     // changes (which yields a new sig).
     if (engineState.sig === sig) return;
     // A different position is mid-search: remember the latest, run it next.
-    if (engineState.status === 'running') { pendingUci = uci; return; }
-    runEngine(uci, sig);
+    if (engineState.status === 'running') { pendingView = view; return; }
+    runEngine(view, sig);
   }
 
-  async function runEngine(uci, sig) {
+  async function runEngine(view, sig) {
     engineState.sig = sig;
     engineState.status = 'running';
     engineState.result = null;
     lastSig = '';
     render(detectContext());
     try {
-      const pos = replayMoves(uci);
-      const fen = toFen(pos);
-      const sideToMove = uci.length % 2 === 0 ? 'w' : 'b';
-      const r = await engineGo(fen, { depth: state.depth, multipv: state.arrows });
+      const pos = view.pos;
+      const r = await engineGo(view.fen, { depth: state.depth, multipv: state.arrows });
       engineFailures = 0; // a clean search resets the breaker
       if (engineState.sig !== sig) return; // user moved on
 
@@ -341,16 +384,19 @@
       const best = r.lines && r.lines[0];
       if (best && best.move) {
         try {
-          replyPos = replayMoves([...uci, best.move]);
-          const r2 = await engineGo(toFen(replyPos), { depth: state.depth, multipv: state.arrows });
-          if (engineState.sig !== sig) return;
-          replyLines = r2.lines || [];
+          const after = clonePos(pos);
+          if (applyUci(after, best.move)) {
+            const r2 = await engineGo(toFen(after), { depth: state.depth, multipv: state.arrows });
+            if (engineState.sig !== sig) return;
+            replyLines = r2.lines || [];
+            replyPos = after;
+          }
         } catch { replyPos = null; }
       }
 
       if (engineState.sig === sig) {
         engineState.result = {
-          lines: r.lines || [], pv: r.pv || [], score: r.score, pos, sideToMove,
+          lines: r.lines || [], pv: r.pv || [], score: r.score, pos, sideToMove: pos.turn,
           replyLines, replyPos
         };
         engineState.status = 'done';
@@ -370,7 +416,7 @@
     }
     lastSig = '';
     render(detectContext());
-    if (pendingUci) { const p = pendingUci; pendingUci = null; maybeAnalyze(p); }
+    if (pendingView) { const p = pendingView; pendingView = null; maybeAnalyze(p); }
   }
 
   // ---- Gemini explanation (on demand) -----------------------------------------
@@ -418,9 +464,9 @@
 
   // Renders the Explain button, its loading/error state, or the result — a
   // self-contained row like resultsHtml(), recomputing haveEngine itself.
-  function explainHtml(uci) {
+  function explainHtml(view) {
     if (!AiPrompt) return '';
-    const haveEngine = engineState.status === 'done' && engineState.sig === curSig(uci) && engineState.result;
+    const haveEngine = engineState.status === 'done' && engineState.sig === curSig(view) && engineState.result;
     if (!haveEngine) return '';
 
     const data = buildExplainInput(engineState.result);
@@ -468,10 +514,12 @@
   // Render-ready arrows. Each carries a resolved colour (by side + rank) so the
   // drawer stays dumb. z-order: book first, then candidates, reply last.
   //   { uci, color, dim? }
-  function computeArrows(uci, haveEngine) {
+  function computeArrows(view, haveEngine) {
     const arrows = [];
-    const opening = detectOpening(uci);
-    const bm = bookMove(uci, opening);
+    // Book hints need the move sequence; when the view fell back to the raw
+    // board FEN (synced=false) the move list is exactly what proved unreliable.
+    const opening = view.synced ? detectOpening(view.uci) : null;
+    const bm = view.synced ? bookMove(view.uci, opening) : null;
     if (bm) arrows.push({ uci: bm, color: BOOK_COLOR });
 
     if (haveEngine) {
@@ -614,15 +662,15 @@
   }
 
   // Compact, inline result chips for the single-line layout.
-  function resultsHtml(uci) {
-    const sideToMove = uci.length % 2 === 0 ? 'w' : 'b';
+  function resultsHtml(view) {
+    const sideToMove = view.pos.turn;
     const userSide = mapSide(bridgePlayingAs) || detectUserSide() || 'w';
-    const opening = detectOpening(uci);
     let chips = '';
 
-    const bm = bookMove(uci, opening);
+    const opening = view.synced ? detectOpening(view.uci) : null;
+    const bm = view.synced ? bookMove(view.uci, opening) : null;
     if (bm) {
-      const san = Explain.sanOf(replayMoves(uci), bm);
+      const san = Explain.sanOf(view.pos, bm);
       chips += `<span class="cc-chip cc-book">${esc(san)}</span>`;
     }
 
@@ -633,7 +681,7 @@
       return chips + `<span class="cc-chip cc-info">${esc(t('stockfishUnavailable'))}</span>`;
     }
 
-    const haveEngine = engineState.status === 'done' && engineState.sig === curSig(uci) && engineState.result;
+    const haveEngine = engineState.status === 'done' && engineState.sig === curSig(view) && engineState.result;
     if (!haveEngine) {
       const msg = engineState.status === 'error' ? t('engineError') : t('analysingDepth', state.depth);
       return chips + `<span class="cc-chip cc-info">${esc(msg)}</span>`;
@@ -681,9 +729,9 @@
   }
 
   // Bottom-right of the screen: settings + results, with a minimize/expand button.
-  function buildPanel(ctx, uci) {
+  function buildPanel(ctx, view) {
     const min = state.panelMin;
-    const opening = detectOpening(uci);
+    const opening = view.synced ? detectOpening(view.uci) : null;
     const titleText = opening ? `${opening.eco} · ${opening.name}` : (OPENINGS ? t('outOfBook') : t('coach'));
     const minMaxLabel = min ? t('expand') : t('minimize');
     const header = `<div class="cc-phead">
@@ -702,10 +750,32 @@
         <input type="range" min="6" max="22" step="1" value="${state.depth}" data-cc-depth></label>
       <label class="cc-prow cc-depth">${esc(t('arrows'))} <output data-cc-arrows-val>${state.arrows}</output>
         <input type="range" min="${ARROW_MIN}" max="${ARROW_MAX}" step="1" value="${state.arrows}" data-cc-arrows></label>
-      <div class="cc-prow cc-results">${resultsHtml(uci)}</div>
-      ${explainHtml(uci)}
+      <div class="cc-prow cc-results">${resultsHtml(view)}</div>
+      ${explainHtml(view)}
       <div class="cc-prow cc-legend">${legendHtml}</div>
     </div>`;
+  }
+
+  // The position we'd analyze doesn't (yet) match what's really on screen —
+  // see the two checks in render() below. Rather than leave stale arrows/panel
+  // content up (which is exactly the "confidently wrong suggestion" bug this
+  // guards against), clear them and show a small syncing state instead.
+  function showOutOfSync(bar, panel) {
+    clearArrows();
+    bar.style.display = '';
+    bar.className = 'chess-coach-bar';
+    (bar.querySelector('#cc-bulb-slot') || bar).innerHTML = buildBar();
+    bindBar(bar);
+    if (state.enabled) {
+      panel.style.display = '';
+      panel.className = 'chess-coach-panel' + (state.panelMin ? ' is-min' : '');
+      const header = `<div class="cc-phead"><span class="cc-ptitle">♞ ${esc(t('coach'))}</span></div>`;
+      panel.innerHTML = state.panelMin ? header :
+        header + `<div class="cc-pbody"><div class="cc-prow"><span class="cc-chip cc-info">${esc(t('syncing'))}</span></div></div>`;
+    } else {
+      panel.style.display = 'none';
+    }
+    lastSig = '';
   }
 
   // ---- render ----------------------------------------------------------------
@@ -727,18 +797,23 @@
     // heavy WASM — stays on-demand and only fires while coaching is on.
     loadOpenings();
 
-    // Only the ply currently on screen matters — bridgeSans is always the full
-    // game, even mid-scrub through a finished game's move list.
-    const viewedSans = sliceToViewedPly ? sliceToViewedPly(bridgeSans || [], bridgePlyViewed) : (bridgeSans || []);
-    const uci = sanToUci(viewedSans);
+    // The position to coach, verified against chess.com's own FEN (or rebuilt
+    // straight from that FEN when our move-list replay can't be trusted — see
+    // buildView). Null only when the replay broke AND no ground truth exists.
+    const view = buildView();
+    if (!view) {
+      showOutOfSync(bar, panel);
+      schedule(200);
+      return;
+    }
 
     // Kick off / refresh continuous analysis only while coaching is on.
-    if (state.enabled) maybeAnalyze(uci);
+    if (state.enabled) maybeAnalyze(view);
 
     // Arrows (independent of the bar's text so a board re-render can't strand them).
-    const haveEngine = engineState.status === 'done' && engineState.sig === curSig(uci) && engineState.result;
-    const arrows = state.enabled ? computeArrows(uci, haveEngine) : [];
-    const arrowSig = (isFlipped() ? 'f|' : 'n|') + (bridgePlyViewed ?? 'end') + '|' +
+    const haveEngine = engineState.status === 'done' && engineState.sig === curSig(view) && engineState.result;
+    const arrows = state.enabled ? computeArrows(view, haveEngine) : [];
+    const arrowSig = (isFlipped() ? 'f|' : 'n|') + view.fen + '|' +
       arrows.map((a) => a.color + a.uci).join('|');
     if (arrowSig !== lastArrowSig || !document.getElementById(ARROW_ID)) {
       drawArrows(arrows);
@@ -749,7 +824,7 @@
     panel.style.display = showPanel ? '' : 'none';
 
     const sig = [ctx, state.enabled, state.panelMin, showPanel, state.openingId || 'auto',
-      state.depth, uci.join(','), engineState.status, engineState.sig, !!OPENINGS].join('|');
+      state.depth, view.fen, view.synced, engineState.status, engineState.sig, !!OPENINGS].join('|');
     if (sig === lastSig) return;
     lastSig = sig;
 
@@ -759,8 +834,8 @@
 
     if (showPanel) {
       panel.className = 'chess-coach-panel' + (state.panelMin ? ' is-min' : '');
-      panel.innerHTML = buildPanel(ctx, uci);
-      bindPanel(panel, uci);
+      panel.innerHTML = buildPanel(ctx, view);
+      bindPanel(panel, view);
     }
   }
 
@@ -775,9 +850,9 @@
     });
   }
 
-  function bindPanel(el, uci) {
+  function bindPanel(el, view) {
     el.querySelector('[data-act="explain"]')?.addEventListener('click', () => {
-      const haveEngine = engineState.status === 'done' && engineState.sig === curSig(uci) && engineState.result;
+      const haveEngine = engineState.status === 'done' && engineState.sig === curSig(view) && engineState.result;
       if (!haveEngine) return;
       const data = buildExplainInput(engineState.result);
       if (data) requestExplain(data);
