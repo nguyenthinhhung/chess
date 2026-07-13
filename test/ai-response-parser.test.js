@@ -9,11 +9,12 @@ test('stripCodeFence removes a ```json fence', () => {
 
 test('parseExplainResponse normalizes a well-formed reply', () => {
   const text = JSON.stringify({
-    assessment: 'x', whyBest: 'y', plan: 'p', line: ['a', 'b'], alternatives: 'alt'
+    assessment: 'x', whyBest: 'y', opponentReply: 'o', plan: 'p', line: ['a', 'b'], alternatives: 'alt'
   });
   const r = parseExplainResponse(text);
   assert.equal(r.assessment, 'x');
   assert.equal(r.whyBest, 'y');
+  assert.equal(r.opponentReply, 'o');
   assert.equal(r.plan, 'p');
   assert.deepEqual(r.line, ['a', 'b']);
   assert.equal(r.alternatives, 'alt');

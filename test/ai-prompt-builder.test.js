@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { buildExplainPrompt, shouldSkipExplain, cacheKeyFor, fmtEval } = require('../ai/prompt-builder.js');
+const { buildExplainPrompt, shouldSkipExplain, cacheKeyFor, fmtEval, EXPLAIN_SCHEMA } = require('../ai/prompt-builder.js');
 
 test('fmtEval formats centipawns and mate', () => {
   assert.equal(fmtEval({ type: 'cp', value: 82 }), '+0.82');
@@ -35,6 +35,12 @@ test('cacheKeyFor is stable for the same fen/move/depth', () => {
   assert.equal(cacheKeyFor(data), cacheKeyFor({ ...data }));
 });
 
+test('cacheKeyFor separates review (played move known) from live, and by coached side', () => {
+  const data = { fen: 'startfen', bestMove: 'e2e4', depth: 14 };
+  assert.notEqual(cacheKeyFor(data), cacheKeyFor({ ...data, playedMove: 'd4' }));
+  assert.notEqual(cacheKeyFor({ ...data, userSide: 'w' }), cacheKeyFor({ ...data, userSide: 'b' }));
+});
+
 test('buildExplainPrompt embeds FEN, best move, and top moves', () => {
   const { system, user } = buildExplainPrompt({
     fen: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1',
@@ -67,5 +73,47 @@ test('buildExplainPrompt prefers SAN + piece description over raw UCI', () => {
   assert.match(user, /Nf6 Nc3/);
   assert.doesNotMatch(user, /b1c3/);
   // ...and the model is told not to re-derive pieces from the FEN.
+  assert.match(system, /re-derive a piece from the FEN/i);
+});
+
+test('EXPLAIN_SCHEMA requires the opponentReply field', () => {
+  assert.ok(EXPLAIN_SCHEMA.properties.opponentReply);
+  assert.ok(EXPLAIN_SCHEMA.required.includes('opponentReply'));
+});
+
+const BASE = {
+  fen: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1',
+  bestMove: 'g8f6',
+  bestSan: 'Nf6',
+  eval: { type: 'cp', value: 30 },
+  depth: 16,
+  pv: ['g8f6', 'b1c3'],
+  pvSan: ['Nf6', 'Nc3'],
+  topMoves: [{ move: 'g8f6', san: 'Nf6', eval: { type: 'cp', value: 30 } }]
+};
+
+test('buildExplainPrompt frames everything for the coached side', () => {
+  const { system, user } = buildExplainPrompt({ ...BASE, userSide: 'b' });
+  assert.match(system, /coaching the Black player/);
+  assert.match(system, /never write as if you were advising the opponent/);
+  assert.match(user, /Coached player: Black/);
+});
+
+test('buildExplainPrompt live (no played move): opponentReply reads from the PV', () => {
+  const { system, user } = buildExplainPrompt({ ...BASE });
+  assert.match(system, /second move of the principal variation/);
+  assert.doesNotMatch(system, /move actually played/);
+  assert.doesNotMatch(user, /Move actually played/);
+});
+
+test('buildExplainPrompt review (played move known): compares best vs played', () => {
+  const { system, user } = buildExplainPrompt({
+    ...BASE, playedMove: 'd5', playedDescription: 'Black pawn d7–d5'
+  });
+  assert.match(user, /Move actually played from this position: d5 \(Black pawn d7–d5\)/);
+  assert.match(system, /compared to the move actually played/);
+  assert.match(system, /exploit the move actually played/);
+  // The grounding guardrails must survive the review framing.
+  assert.match(system, /Do NOT invent threats/);
   assert.match(system, /re-derive a piece from the FEN/i);
 });

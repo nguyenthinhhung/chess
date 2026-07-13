@@ -465,16 +465,39 @@
   // never the raw Stockfish log (see plan.md Phase 1). Moves are pre-resolved
   // to SAN and an explicit piece description here (from the real board) so the
   // model never has to read piece identities out of the FEN itself.
+  // The move actually played from the analyzed position — known only when the
+  // user is reviewing history (the viewed ply sits before the end of the game;
+  // the next SAN in the record is what was played from here). Validated by
+  // replaying it against the analyzed position itself, so a desynced move list
+  // can never attach a move that is illegal on this board.
+  function playedFromHere(pos) {
+    const all = bridgeSans || [];
+    const viewed = sliceToViewedPly ? sliceToViewedPly(all, bridgePlyViewed) : all;
+    if (viewed.length >= all.length) return null; // live head: nothing played yet
+    const clone = clonePos(pos);
+    const uci = applySan(clone, all[viewed.length]);
+    if (!uci) return null;
+    const facts = Explain.moveFacts(pos, uci);
+    return {
+      san: sanChecked(pos, uci),
+      description: facts ? describeMove(uci, facts) : null
+    };
+  }
+
   function buildExplainInput(res) {
     const best = res.lines && res.lines[0];
     if (!best || !best.move) return null;
     const pos = res.pos;
     const facts = Explain.moveFacts(pos, best.move);
+    const played = playedFromHere(pos);
     return {
       fen: toFen(pos),
       bestMove: best.move,
       bestSan: sanChecked(pos, best.move),
       moveDescription: facts ? describeMove(best.move, facts) : null,
+      playedMove: played ? played.san : null,
+      playedDescription: played ? played.description : null,
+      userSide: mapSide(bridgePlayingAs) || detectUserSide() || 'w',
       eval: best.score,
       depth: best.depth || state.depth,
       pv: (best.pv || []).slice(0, 8),
@@ -545,6 +568,7 @@
     return `<div class="cc-prow cc-explain-result">
       ${d.assessment ? `<div class="cc-erow"><b>${esc(t('assessment'))}</b> ${esc(d.assessment)}</div>` : ''}
       ${d.whyBest ? `<div class="cc-erow"><b>${esc(t('bestMoveLabel'))}</b> ${esc(d.whyBest)}</div>` : ''}
+      ${d.opponentReply ? `<div class="cc-erow"><b>${esc(t('replyLabel'))}</b> ${esc(d.opponentReply)}</div>` : ''}
       ${d.plan ? `<div class="cc-erow"><b>${esc(t('planLabel'))}</b> ${esc(d.plan)}</div>` : ''}
       ${lineHtml ? `<div class="cc-erow"><b>${esc(t('lineLabel'))}</b><span class="cc-lsteps">${lineHtml}</span></div>` : ''}
       ${d.alternatives ? `<div class="cc-erow"><b>${esc(t('alternativesLabel'))}</b> ${esc(d.alternatives)}</div>` : ''}
