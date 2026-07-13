@@ -121,6 +121,20 @@ async function engineStop() {
 // never calls that provider again.
 const AI_CACHE_PREFIX = 'ccAiCache:';
 
+// The prompt version is baked into every cache key (see cacheKeyFor), so after
+// a version bump the old entries can never be read again — but nothing else
+// ever deletes them, and they'd sit in chrome.storage.local forever. Prune them
+// on install/update, the only moments a bump can land.
+async function pruneStaleAiCache() {
+  try {
+    const all = await chrome.storage.local.get(null);
+    const live = `:v${ChessAiPrompt.EXPLAIN_CACHE_VERSION}|`;
+    const stale = Object.keys(all).filter((k) => k.startsWith(AI_CACHE_PREFIX) && !k.includes(live));
+    if (stale.length) await chrome.storage.local.remove(stale);
+  } catch {}
+}
+chrome.runtime.onInstalled.addListener(() => { pruneStaleAiCache(); });
+
 // aiApiKeys/aiModels hold one entry per provider (see options.js) so switching
 // providers never loses the other one's saved key. geminiApiKey/geminiModel
 // are the pre-multi-provider settings, kept as a fallback for users who

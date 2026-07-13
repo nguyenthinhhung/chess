@@ -56,6 +56,10 @@
   const ARROW_ID = 'chess-coach-arrows';
   const ARROW_MIN = 1, ARROW_MAX = 5; // user-selectable arrow count (per side)
   const MAX_BOOK_PLY = 24;    // stop consulting the opening book after this depth
+  // The opponent-reply arrows are one-ply hints; search cost grows steeply with
+  // depth while the top replies barely change past this, so the second search
+  // is capped here regardless of the user's depth setting.
+  const REPLY_DEPTH = 10;
 
   // Openings offered in the picker, tagged by the side that chooses them, so the
   // dropdown can show only the openings relevant to the side you're playing.
@@ -378,28 +382,32 @@
       engineFailures = 0; // a clean search resets the breaker
       if (engineState.sig !== sig) return; // user moved on
 
+      // Publish immediately: arrows, eval and the Explain button need nothing
+      // from the reply search, so the user shouldn't stare at "Analysing…"
+      // while a second search runs. The reply arrows stream in afterwards.
+      engineState.result = {
+        lines: r.lines || [], pv: r.pv || [], score: r.score, pos, sideToMove: pos.turn,
+        replyLines: [], replyPos: null
+      };
+      engineState.status = 'done';
+      lastSig = '';
+      render(detectContext());
+
       // Second search: the other side's top replies AFTER the best move, so the
-      // opponent gets candidate arrows too (symmetric with yours).
-      let replyLines = [], replyPos = null;
+      // opponent gets candidate arrows too (symmetric with yours). Skipped when
+      // a newer position is already waiting — its main search matters more than
+      // this position's hint arrows.
       const best = r.lines && r.lines[0];
-      if (best && best.move) {
+      if (best && best.move && !pendingView) {
         try {
           const after = clonePos(pos);
           if (applyUci(after, best.move)) {
-            const r2 = await engineGo(toFen(after), { depth: state.depth, multipv: state.arrows });
+            const r2 = await engineGo(toFen(after), { depth: Math.min(state.depth, REPLY_DEPTH), multipv: state.arrows });
             if (engineState.sig !== sig) return;
-            replyLines = r2.lines || [];
-            replyPos = after;
+            engineState.result.replyLines = r2.lines || [];
+            engineState.result.replyPos = after;
           }
-        } catch { replyPos = null; }
-      }
-
-      if (engineState.sig === sig) {
-        engineState.result = {
-          lines: r.lines || [], pv: r.pv || [], score: r.score, pos, sideToMove: pos.turn,
-          replyLines, replyPos
-        };
-        engineState.status = 'done';
+        } catch {} // reply arrows are optional — keep the published main result
       }
     } catch (e) {
       // DOMException doesn't subclass Error, so logging it bare prints the

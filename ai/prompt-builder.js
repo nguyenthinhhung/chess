@@ -144,7 +144,7 @@ function buildExplainPrompt(data) {
   return { system, user };
 }
 
-const _pbExports = { EXPLAIN_SCHEMA, buildExplainPrompt, shouldSkipExplain, cacheKeyFor, fmtEval };
+const _pbExports = { EXPLAIN_SCHEMA, EXPLAIN_CACHE_VERSION, buildExplainPrompt, shouldSkipExplain, cacheKeyFor, fmtEval };
 if (_pbIsNode) {
   module.exports = _pbExports;
 } else if (typeof globalThis !== 'undefined') {

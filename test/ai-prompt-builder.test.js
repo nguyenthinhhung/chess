@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { buildExplainPrompt, shouldSkipExplain, cacheKeyFor, fmtEval, EXPLAIN_SCHEMA } = require('../ai/prompt-builder.js');
+const { buildExplainPrompt, shouldSkipExplain, cacheKeyFor, fmtEval, EXPLAIN_SCHEMA, EXPLAIN_CACHE_VERSION } = require('../ai/prompt-builder.js');
 
 test('fmtEval formats centipawns and mate', () => {
   assert.equal(fmtEval({ type: 'cp', value: 82 }), '+0.82');
@@ -33,6 +33,11 @@ test('shouldSkipExplain: skips when there is no analysis', () => {
 test('cacheKeyFor is stable for the same fen/move/depth', () => {
   const data = { fen: 'startfen', bestMove: 'e2e4', depth: 14 };
   assert.equal(cacheKeyFor(data), cacheKeyFor({ ...data }));
+});
+
+test('cacheKeyFor starts with the exported cache version — the stale-cache purge in background.js keys off this', () => {
+  const key = cacheKeyFor({ fen: 'startfen', bestMove: 'e2e4', depth: 14 });
+  assert.ok(key.startsWith(`v${EXPLAIN_CACHE_VERSION}|`));
 });
 
 test('cacheKeyFor separates review (played move known) from live, and by coached side', () => {
