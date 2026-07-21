@@ -1,7 +1,7 @@
 // ai/response-parser.js — turns Gemini's raw text reply into the validated
-// { assessment, whyBest, opponentReply, plan, line, alternatives } shape the
-// UI expects, or throws AiParseError. Pure: no DOM, no chrome, no network —
-// no markdown parsing beyond stripping an accidental code fence.
+// { whyBest, plan, opponentReply } shape the UI expects, or throws
+// AiParseError. Pure: no DOM, no chrome, no network — no markdown parsing
+// beyond stripping an accidental code fence.
 
 const _rpIsNode = typeof module !== 'undefined' && module.exports;
 
@@ -31,15 +31,11 @@ function parseExplainResponse(text) {
   if (!obj || typeof obj !== 'object') throw new AiParseError('Gemini response was not a JSON object', text);
 
   const str = (v) => (typeof v === 'string' ? v : '');
-  const line = Array.isArray(obj.line) ? obj.line.filter((s) => typeof s === 'string') : [];
 
   return {
-    assessment: str(obj.assessment),
     whyBest: str(obj.whyBest),
-    opponentReply: str(obj.opponentReply),
     plan: str(obj.plan),
-    line,
-    alternatives: str(obj.alternatives)
+    opponentReply: str(obj.opponentReply)
   };
 }
 

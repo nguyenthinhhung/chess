@@ -86,6 +86,25 @@
   // since the board already shows whose piece is moving. Book move is violet.
   const RANK_COLORS = ['#22ac38', '#2b86d8', '#e0a000']; // green / blue / amber
   const BOOK_COLOR = '#9b59b6';
+  const rankColor = (i) => RANK_COLORS[Math.min(i, RANK_COLORS.length - 1)];
+  // Results are grouped one line per side (W / B tag), and each move within a
+  // line is coloured by its rank to match the board arrows (best green, then
+  // blue, amber…), so panel and board speak one colour language.
+  const moveItem = (color, san, evalText) =>
+    `<span class="cc-mv" style="color:${color}"><b>${esc(san)}</b>${evalText ? ' ' + esc(evalText) : ''}</span>`;
+  // One side's candidate line: its W/B tag then its moves (rank-coloured). Evals
+  // are shown on one shared scale — White's point of view, like an eval bar — so
+  // the two lines are directly comparable; a Black move's score (from Black's own
+  // POV) is flipped to get there. Returns '' when empty.
+  function sideLine(side, list, pos, opts = {}) {
+    if (!list || !list.length || !pos) return '';
+    const items = list.slice(0, state.arrows).filter((l) => l.move)
+      .map((l, i) => moveItem(rankColor(i), Explain.sanOf(pos, l.move), Explain.formatScore(l.score, side === 'b')))
+      .join('');
+    if (!items) return '';
+    const tag = `<span class="cc-side-tag" title="${esc(side === 'w' ? t('sideWhite') : t('sideBlack'))}"><i class="cc-dot cc-dot-${side}"></i></span>`;
+    return `<div class="cc-side-line${opts.dim ? ' cc-dim' : ''}">${tag}${items}</div>`;
+  }
   const legend = () => [
     { color: BOOK_COLOR, label: t('legendBook') },
     { color: RANK_COLORS[0], label: t('legendBest') },
@@ -130,6 +149,15 @@
     if (p === 1 || p === 'white' || p === 'w') return 'w';
     if (p === 2 || p === 'black' || p === 'b') return 'b';
     return null;
+  }
+
+  // True when the viewed position is the latest one in the game (not scrubbing
+  // back through history). Only at the head is "the move just played" the last
+  // move of the record — which is what the live move-review grades.
+  function atLiveHead() {
+    const all = bridgeSans || [];
+    const viewed = sliceToViewedPly ? sliceToViewedPly(all, bridgePlyViewed) : all;
+    return viewed.length >= all.length;
   }
 
   window.addEventListener('message', (e) => {
@@ -393,12 +421,47 @@
       lastSig = '';
       render(detectContext());
 
-      // Second search: the other side's top replies AFTER the best move, so the
-      // opponent gets candidate arrows too (symmetric with yours). Skipped when
-      // a newer position is already waiting — its main search matters more than
-      // this position's hint arrows.
       const best = r.lines && r.lines[0];
-      if (best && best.move && !pendingView) {
+      const userSide = mapSide(bridgePlayingAs) || detectUserSide() || 'w';
+      // When it is the opponent's turn at the live head, the user has just moved
+      // and has nothing to play now — so instead of coaching the opponent, grade
+      // the move they just made. This needs no extra-cost search beyond the
+      // parent: the played move's value is the CURRENT eval (opponent to move)
+      // negated, and the best is the parent's own top line.
+      const reviewable = view.synced && view.uci.length >= 1 && atLiveHead() && pos.turn !== userSide;
+
+      if (reviewable && !pendingView) {
+        try {
+          const parentPos = createPosition();
+          let ok = true;
+          for (const u of view.uci.slice(0, -1)) if (!applyUci(parentPos, u)) { ok = false; break; }
+          const playedUci = view.uci[view.uci.length - 1];
+          if (ok) {
+            const pr = await engineGo(toFen(parentPos), { depth: state.depth, multipv: 1 });
+            if (engineState.sig !== sig) return;
+            const pBest = pr.lines && pr.lines[0];
+            if (pBest && pBest.move && pr.score && r.score) {
+              const eBest = Explain.scoreToCp(pr.score);   // parent side to move IS the user
+              const ePlayed = -Explain.scoreToCp(r.score); // current eval is the opponent's POV
+              const cpLoss = eBest - ePlayed;
+              const replyUci = best && best.move ? best.move : null; // opponent's punishing reply
+              const verdict = Explain.explainPlayed(parentPos, playedUci, pBest.move, cpLoss, replyUci, state.lang);
+              engineState.result.review = {
+                ...verdict, // { key, label, text }
+                playedUci, playedSan: Explain.sanOf(parentPos, playedUci),
+                bestUci: pBest.move, bestSan: Explain.sanOf(parentPos, pBest.move),
+                bestScore: pr.score
+              };
+              lastSig = '';
+              render(detectContext());
+            }
+          }
+        } catch {} // the review is optional — keep the published main result
+      } else if (best && best.move && !pendingView) {
+        // Second search: the other side's top replies AFTER the best move, so the
+        // opponent gets candidate arrows too (symmetric with yours). Skipped when
+        // a newer position is already waiting — its main search matters more than
+        // this position's hint arrows.
         try {
           const after = clonePos(pos);
           if (applyUci(after, best.move)) {
@@ -569,17 +632,14 @@
       </div>`;
     }
 
+    // Strategy-first: Stockfish's numbers already live in the chips above, so
+    // the AI panel shows only the three fields that add the human plan —
+    // what the best move does, the middlegame plan, and the opponent's intent.
     const d = explainState.data;
-    const lineHtml = (d.line && d.line.length)
-      ? d.line.map((s) => `<span class="cc-lstep">${esc(s)}</span>`).join('')
-      : '';
     return `<div class="cc-prow cc-explain-result">
-      ${d.assessment ? `<div class="cc-erow"><b>${esc(t('assessment'))}</b> ${esc(d.assessment)}</div>` : ''}
       ${d.whyBest ? `<div class="cc-erow"><b>${esc(t('bestMoveLabel'))}</b> ${esc(d.whyBest)}</div>` : ''}
-      ${d.opponentReply ? `<div class="cc-erow"><b>${esc(t('replyLabel'))}</b> ${esc(d.opponentReply)}</div>` : ''}
       ${d.plan ? `<div class="cc-erow"><b>${esc(t('planLabel'))}</b> ${esc(d.plan)}</div>` : ''}
-      ${lineHtml ? `<div class="cc-erow"><b>${esc(t('lineLabel'))}</b><span class="cc-lsteps">${lineHtml}</span></div>` : ''}
-      ${d.alternatives ? `<div class="cc-erow"><b>${esc(t('alternativesLabel'))}</b> ${esc(d.alternatives)}</div>` : ''}
+      ${d.opponentReply ? `<div class="cc-erow"><b>${esc(t('replyLabel'))}</b> ${esc(d.opponentReply)}</div>` : ''}
     </div>`;
   }
 
@@ -753,7 +813,7 @@
     const bm = view.synced ? bookMove(view.uci, opening) : null;
     if (bm) {
       const san = Explain.sanOf(view.pos, bm);
-      chips += `<span class="cc-chip cc-book">${esc(san)}</span>`;
+      chips += `<div class="cc-side-line"><span class="cc-side-tag" title="${esc(t('legendBook'))}">📖</span>${moveItem(BOOK_COLOR, san, '')}</div>`;
     }
 
     if (engineDead) {
@@ -771,29 +831,36 @@
 
     const res = engineState.result;
     const userToMove = sideToMove === userSide;
-    const moveCls = userToMove ? 'cc-good' : 'cc-opp';
 
-    const best = res.lines[0];
-    if (best && best.move) {
-      const san = Explain.sanOf(res.pos, best.move);
-      const evalText = Explain.formatScore(best.score, !userToMove);
-      const expl = Explain.explainBest(res.pos, best.move, best.score, best.pv && best.pv[1], state.lang);
-      const icon = userToMove ? '★' : '⚔';
-      chips += `<span class="cc-chip ${moveCls}" title="${esc(expl || '')}">${icon} <b>${esc(san)}</b> ${esc(evalText)}</span>`;
+    // Opponent to move at the live head → the user just moved. Grade that move
+    // instead of showing the opponent's best as if coaching them.
+    if (!userToMove && view.synced && view.uci.length >= 1 && atLiveHead()) {
+      if (!res.review) {
+        return chips + `<span class="cc-chip cc-info">${esc(t('reviewingYourMove'))}</span>`;
+      }
+      const rv = res.review;
+      // Verdict + the move you should have played, on one line. The verdict keeps
+      // its own quality colour (green → red) since a played move has no arrow.
+      let vline = `<div class="cc-side-line"><span class="cc-chip cc-cls-${rv.key}" title="${esc(rv.text || '')}">${esc(rv.label)} — <b>${esc(rv.playedSan)}</b></span>`;
+      if (rv.bestUci && rv.bestUci !== rv.playedUci) {
+        const evalText = Explain.formatScore(rv.bestScore, userSide === 'b'); // to White's POV, like the lines
+        vline += `<span class="cc-chip cc-alts">${esc(t('shouldHavePlayed'))} <b>${esc(rv.bestSan)}</b> ${esc(evalText)}</span>`;
+      }
+      chips += vline + '</div>';
+      // The opponent's candidate replies, on their own W/B line (they have arrows).
+      chips += sideLine(sideToMove, res.lines, res.pos, {});
+      return chips;
     }
-    const alts = res.lines.slice(1, state.arrows).filter((l) => l.move)
-      .map((l) => esc(Explain.sanOf(res.pos, l.move)));
-    if (alts.length) chips += `<span class="cc-chip cc-alts">${alts.join(' · ')}</span>`;
 
-    // The other side's best reply (and a couple of alternatives).
-    const rep = res.replyLines && res.replyPos ? res.replyLines.filter((l) => l.move) : [];
-    if (rep.length) {
-      const replyCls = userToMove ? 'cc-opp' : 'cc-good';
-      const icon = userToMove ? '⚔' : '★';
-      const label = userToMove ? t('opponentsReply') : t('yourReply');
-      const sans = rep.slice(0, state.arrows).map((l) => esc(Explain.sanOf(res.replyPos, l.move)));
-      chips += `<span class="cc-chip ${replyCls}" title="${esc(label)}">${icon} ${sans.join(' · ')}</span>`;
-    }
+    // Forward view: one line per side, White on top. The side to move gets its
+    // candidates (res.lines, solid arrows); the other side gets its replies after
+    // the best move (res.replyLines, dim arrows).
+    const mine = { list: res.lines, pos: res.pos };
+    const other = { list: res.replyLines, pos: res.replyPos };
+    const white = sideToMove === 'w' ? mine : other;
+    const black = sideToMove === 'w' ? other : mine;
+    chips += sideLine('w', white.list, white.pos, { dim: sideToMove !== 'w' });
+    chips += sideLine('b', black.list, black.pos, { dim: sideToMove !== 'b' });
     return chips;
   }
 

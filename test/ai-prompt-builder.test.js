@@ -55,7 +55,7 @@ test('buildExplainPrompt embeds FEN, best move, and top moves', () => {
     pv: ['g8f6', 'b1c3'],
     topMoves: [{ move: 'g8f6', eval: { type: 'cp', value: 30 } }]
   });
-  assert.match(system, /Ground every statement ONLY in the data given/);
+  assert.match(system, /Stay anchored/);
   assert.match(user, /g8f6/);
   assert.match(user, /Candidate moves/);
 });
@@ -81,6 +81,19 @@ test('buildExplainPrompt prefers SAN + piece description over raw UCI', () => {
   assert.match(system, /re-derive a piece from the FEN/i);
 });
 
+test('buildExplainPrompt injects a computed Position facts block and points the model at it', () => {
+  const { system, user } = buildExplainPrompt({
+    fen: 'r1bqkb1r/pp3ppp/2n1pn2/8/3P4/2N2N2/PP3PPP/R1BQKB1R w KQkq - 0 1',
+    bestMove: 'd4d5', bestSan: 'd5',
+    eval: { type: 'cp', value: 35 }, depth: 16, pv: ['d4d5'], pvSan: ['d5'],
+    topMoves: [{ move: 'd4d5', san: 'd5', eval: { type: 'cp', value: 35 } }]
+  });
+  assert.match(user, /Position facts \(computed from the board/);
+  assert.match(user, /isolated pawn\(s\) on d4/);   // the IQP is spelled out for the model
+  assert.match(user, /Open files: c/);
+  assert.match(system, /"Position facts" block/);    // and the model is told to trust it
+});
+
 test('EXPLAIN_SCHEMA requires the opponentReply field', () => {
   assert.ok(EXPLAIN_SCHEMA.properties.opponentReply);
   assert.ok(EXPLAIN_SCHEMA.required.includes('opponentReply'));
@@ -100,13 +113,13 @@ const BASE = {
 test('buildExplainPrompt frames everything for the coached side', () => {
   const { system, user } = buildExplainPrompt({ ...BASE, userSide: 'b' });
   assert.match(system, /coaching the Black player/);
-  assert.match(system, /never write as if you were advising the opponent/);
+  assert.match(system, /never advise the opponent/);
   assert.match(user, /Coached player: Black/);
 });
 
-test('buildExplainPrompt live (no played move): opponentReply reads from the PV', () => {
+test('buildExplainPrompt live (no played move): opponentReply reads the opponent intent', () => {
   const { system, user } = buildExplainPrompt({ ...BASE });
-  assert.match(system, /second move of the principal variation/);
+  assert.match(system, /what the opponent intends after the best move/);
   assert.doesNotMatch(system, /move actually played/);
   assert.doesNotMatch(user, /Move actually played/);
 });
@@ -116,9 +129,9 @@ test('buildExplainPrompt review (played move known): compares best vs played', (
     ...BASE, playedMove: 'd5', playedDescription: 'Black pawn d7–d5'
   });
   assert.match(user, /Move actually played from this position: d5 \(Black pawn d7–d5\)/);
-  assert.match(system, /compared to the move actually played/);
-  assert.match(system, /exploit the move actually played/);
+  assert.match(system, /how the move actually played compares/);
+  assert.match(system, /what the opponent is trying to achieve in return/);
   // The grounding guardrails must survive the review framing.
-  assert.match(system, /Do NOT invent threats/);
+  assert.match(system, /do NOT claim a winning tactic/);
   assert.match(system, /re-derive a piece from the FEN/i);
 });

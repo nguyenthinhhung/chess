@@ -171,11 +171,15 @@
   background: rgba(255, 255, 255, 0.06);
 }
 .cc-chip b { font-weight: 700; }
-.cc-good { color: #b6d36b; background: rgba(118, 153, 0, 0.16); }
+/* Move chips get their colour inline from the arrow palette (see moveChip in
+   chess-coach.js). Only the status and neutral chips are styled by class. */
 .cc-info { color: #7fb2d6; }
-.cc-book { color: #d6bdf2; background: rgba(142, 68, 173, 0.22); }
 .cc-alts { color: #bdbbb7; }
-.cc-opp { color: #e89089; background: rgba(208, 70, 59, 0.16); }
+/* Move-review verdict chips, graded from best (green) to blunder (red). */
+.cc-cls-best, .cc-cls-good { color: #b6d36b; background: rgba(118, 153, 0, 0.16); }
+.cc-cls-inaccuracy { color: #e6c260; background: rgba(224, 160, 0, 0.16); }
+.cc-cls-mistake { color: #e8a45a; background: rgba(210, 120, 30, 0.18); }
+.cc-cls-blunder { color: #e89089; background: rgba(208, 70, 59, 0.20); }
 
 /* ===========================================================================
    Chess Coach — settings + results panel, fixed at the screen's bottom-right
@@ -235,8 +239,17 @@
 .cc-pbody .cc-select { flex: 1 1 auto; max-width: none; width: 100%; }
 .cc-pbody .cc-depth { font-size: 12px; }
 .cc-pbody .cc-depth input[type="range"] { flex: 1; width: auto; }
-.cc-results { display: flex; flex-wrap: wrap; gap: 6px; }
+.cc-results { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
 .cc-results:empty { display: none; }
+/* One line per side: a white/black dot (à la Lichess) then that side's moves,
+   coloured by rank. */
+.cc-side-line { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 10px; }
+.cc-side-line.cc-dim { opacity: 0.6; }
+.cc-side-tag { display: inline-flex; align-items: center; min-width: 14px; }
+.cc-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.cc-dot-w { background: #f4f4f4; border: 1px solid #9aa0a6; }
+.cc-dot-b { background: #2a2d31; border: 1px solid #9aa0a6; }
+.cc-mv { white-space: nowrap; }
 
 .cc-legend {
   display: flex;
