@@ -94,9 +94,11 @@ test('buildExplainPrompt injects a computed Position facts block and points the 
   assert.match(system, /"Position facts" block/);    // and the model is told to trust it
 });
 
-test('EXPLAIN_SCHEMA requires the opponentReply field', () => {
+test('EXPLAIN_SCHEMA requires the opponentReply and principle fields', () => {
   assert.ok(EXPLAIN_SCHEMA.properties.opponentReply);
   assert.ok(EXPLAIN_SCHEMA.required.includes('opponentReply'));
+  assert.ok(EXPLAIN_SCHEMA.properties.principle);
+  assert.ok(EXPLAIN_SCHEMA.required.includes('principle'));
 });
 
 const BASE = {
@@ -117,11 +119,13 @@ test('buildExplainPrompt frames everything for the coached side', () => {
   assert.match(user, /Coached player: Black/);
 });
 
-test('buildExplainPrompt live (no played move): opponentReply reads the opponent intent', () => {
+test('buildExplainPrompt live (no played move): opponentReply reads from the PV', () => {
   const { system, user } = buildExplainPrompt({ ...BASE });
-  assert.match(system, /what the opponent intends after the best move/);
+  assert.match(system, /second move of the principal variation/);
   assert.doesNotMatch(system, /move actually played/);
   assert.doesNotMatch(user, /Move actually played/);
+  // The opponent's reply (PV move 2) is spelled out to ground the field.
+  assert.match(user, /Opponent's best reply: Nc3/);
 });
 
 test('buildExplainPrompt review (played move known): compares best vs played', () => {
@@ -130,8 +134,34 @@ test('buildExplainPrompt review (played move known): compares best vs played', (
   });
   assert.match(user, /Move actually played from this position: d5 \(Black pawn d7–d5\)/);
   assert.match(system, /how the move actually played compares/);
-  assert.match(system, /what the opponent is trying to achieve in return/);
+  assert.match(system, /how the opponent exploits the played move/);
   // The grounding guardrails must survive the review framing.
-  assert.match(system, /do NOT claim a winning tactic/);
+  assert.match(system, /do NOT invent a forced tactic/);
   assert.match(system, /re-derive a piece from the FEN/i);
+});
+
+test('buildExplainPrompt asks for a transferable principle', () => {
+  const { system } = buildExplainPrompt({ ...BASE });
+  assert.match(system, /"principle":/);
+  assert.match(system, /transferable chess maxim/);
+});
+
+test('plan themes are filtered to what the Position facts support', () => {
+  // IQP, neither side castled → offer the weakness + open-file ideas, not king attack.
+  const iqp = buildExplainPrompt({
+    fen: 'r1bqkb1r/pp3ppp/2n1pn2/8/3P4/2N2N2/PP3PPP/R1BQKB1R w KQkq - 0 1',
+    bestMove: 'f1d3', bestSan: 'Bd3', eval: { type: 'cp', value: 20 }, depth: 16,
+    pv: ['f1d3'], pvSan: ['Bd3'], topMoves: [{ move: 'f1d3', san: 'Bd3', eval: { type: 'cp', value: 20 } }]
+  }).system;
+  assert.match(iqp, /attack a structural weakness/);
+  assert.match(iqp, /open or half-open file/);
+  assert.doesNotMatch(iqp, /attack the king/);
+
+  // Opposite-side castling → the king-attack idea is offered.
+  const castled = buildExplainPrompt({
+    fen: 'r1bq1rk1/ppp2ppp/2n5/8/8/2N5/PPP2PPP/2KR3R w - - 0 1',
+    bestMove: 'd1e1', bestSan: 'Rde1', eval: { type: 'cp', value: -30 }, depth: 16,
+    pv: ['d1e1'], pvSan: ['Rde1'], topMoves: [{ move: 'd1e1', san: 'Rde1', eval: { type: 'cp', value: -30 } }]
+  }).system;
+  assert.match(castled, /attack the king/);
 });
