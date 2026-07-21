@@ -132,6 +132,15 @@
     return null;
   }
 
+  // True when the viewed position is the latest one in the game (not scrubbing
+  // back through history). Only at the head is "the move just played" the last
+  // move of the record — which is what the live move-review grades.
+  function atLiveHead() {
+    const all = bridgeSans || [];
+    const viewed = sliceToViewedPly ? sliceToViewedPly(all, bridgePlyViewed) : all;
+    return viewed.length >= all.length;
+  }
+
   window.addEventListener('message', (e) => {
     if (e.source !== window) return;
     const d = e.data;
@@ -393,12 +402,47 @@
       lastSig = '';
       render(detectContext());
 
-      // Second search: the other side's top replies AFTER the best move, so the
-      // opponent gets candidate arrows too (symmetric with yours). Skipped when
-      // a newer position is already waiting — its main search matters more than
-      // this position's hint arrows.
       const best = r.lines && r.lines[0];
-      if (best && best.move && !pendingView) {
+      const userSide = mapSide(bridgePlayingAs) || detectUserSide() || 'w';
+      // When it is the opponent's turn at the live head, the user has just moved
+      // and has nothing to play now — so instead of coaching the opponent, grade
+      // the move they just made. This needs no extra-cost search beyond the
+      // parent: the played move's value is the CURRENT eval (opponent to move)
+      // negated, and the best is the parent's own top line.
+      const reviewable = view.synced && view.uci.length >= 1 && atLiveHead() && pos.turn !== userSide;
+
+      if (reviewable && !pendingView) {
+        try {
+          const parentPos = createPosition();
+          let ok = true;
+          for (const u of view.uci.slice(0, -1)) if (!applyUci(parentPos, u)) { ok = false; break; }
+          const playedUci = view.uci[view.uci.length - 1];
+          if (ok) {
+            const pr = await engineGo(toFen(parentPos), { depth: state.depth, multipv: 1 });
+            if (engineState.sig !== sig) return;
+            const pBest = pr.lines && pr.lines[0];
+            if (pBest && pBest.move && pr.score && r.score) {
+              const eBest = Explain.scoreToCp(pr.score);   // parent side to move IS the user
+              const ePlayed = -Explain.scoreToCp(r.score); // current eval is the opponent's POV
+              const cpLoss = eBest - ePlayed;
+              const replyUci = best && best.move ? best.move : null; // opponent's punishing reply
+              const verdict = Explain.explainPlayed(parentPos, playedUci, pBest.move, cpLoss, replyUci, state.lang);
+              engineState.result.review = {
+                ...verdict, // { key, label, text }
+                playedUci, playedSan: Explain.sanOf(parentPos, playedUci),
+                bestUci: pBest.move, bestSan: Explain.sanOf(parentPos, pBest.move),
+                bestScore: pr.score
+              };
+              lastSig = '';
+              render(detectContext());
+            }
+          }
+        } catch {} // the review is optional — keep the published main result
+      } else if (best && best.move && !pendingView) {
+        // Second search: the other side's top replies AFTER the best move, so the
+        // opponent gets candidate arrows too (symmetric with yours). Skipped when
+        // a newer position is already waiting — its main search matters more than
+        // this position's hint arrows.
         try {
           const after = clonePos(pos);
           if (applyUci(after, best.move)) {
@@ -769,6 +813,26 @@
     const res = engineState.result;
     const userToMove = sideToMove === userSide;
     const moveCls = userToMove ? 'cc-good' : 'cc-opp';
+
+    // Opponent to move at the live head → the user just moved. Grade that move
+    // instead of showing the opponent's best as if coaching them.
+    if (!userToMove && view.synced && view.uci.length >= 1 && atLiveHead()) {
+      if (!res.review) {
+        return chips + `<span class="cc-chip cc-info">${esc(t('reviewingYourMove'))}</span>`;
+      }
+      const rv = res.review;
+      chips += `<span class="cc-chip cc-cls-${rv.key}" title="${esc(rv.text || '')}">${esc(rv.label)} — <b>${esc(rv.playedSan)}</b></span>`;
+      if (rv.bestUci && rv.bestUci !== rv.playedUci) {
+        const evalText = Explain.formatScore(rv.bestScore, false); // parent side to move is the user
+        chips += `<span class="cc-chip cc-good">★ ${esc(t('shouldHavePlayed'))} ${esc(rv.bestSan)} ${esc(evalText)}</span>`;
+      }
+      const oppSans = res.lines.slice(0, state.arrows).filter((l) => l.move)
+        .map((l) => esc(Explain.sanOf(res.pos, l.move)));
+      if (oppSans.length) {
+        chips += `<span class="cc-chip cc-opp" title="${esc(t('opponentsReply'))}">⚔ ${oppSans.join(' · ')}</span>`;
+      }
+      return chips;
+    }
 
     const best = res.lines[0];
     if (best && best.move) {
