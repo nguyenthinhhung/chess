@@ -1,13 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "Chess.com to Lichess Analyzer",
+  "name": "Chess Coach for Chess.com",
   "version": "0.4.0",
-  "description": "Import chess.com games into Lichess for analysis, plus an in-game Stockfish coach with opening recognition (vs bots and on the analysis board).",
+  "description": "Real-time Stockfish coaching on chess.com — move suggestions, opening recognition, and explanations in every game (bots or live opponents), plus one-click PGN import to Lichess for deeper analysis.",
   "permissions": ["storage", "offscreen"],
   "host_permissions": [
     "https://*.chess.com/*",
     "https://lichess.org/*",
-    "https://api.chess.com/*"
+    "https://api.chess.com/*",
+    "https://generativelanguage.googleapis.com/*",
+    "https://api.groq.com/*"
   ],
   "icons": {
     "16": "icons/icon16.png",
@@ -20,7 +22,7 @@
   "content_scripts": [
     {
       "matches": ["https://*.chess.com/*"],
-      "js": ["pgn.js", "chesscore.js", "explain.js", "content.js", "chess-coach.js"],
+      "js": ["pgn.js", "chesscore.js", "i18n.js", "explain.js", "ply-view.js", "ai/prompt-builder.js", "content.js", "chess-coach.js"],
       "css": ["styles.css"],
       "run_at": "document_idle"
     },

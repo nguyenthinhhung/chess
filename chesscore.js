@@ -32,6 +32,34 @@ const rankOf = (i) => (i / 8) | 0;
 const sqName = (i) => String.fromCharCode(97 + fileOf(i)) + (rankOf(i) + 1);
 const sqIndex = (name) => (name.charCodeAt(1) - 49) * 8 + (name.charCodeAt(0) - 97);
 
+// Does the piece on `from` attack `to`? Pawns attack diagonally only (their
+// pushes are not attacks), so they are handled here; every other piece shares
+// pieceReaches' geometry.
+function attacks(board, from, to) {
+  const p = board[from];
+  if (p === '.' || from === to) return false;
+  if (p.toLowerCase() === 'p') {
+    const white = p === 'P';
+    const df = fileOf(to) - fileOf(from);
+    const dr = rankOf(to) - rankOf(from);
+    return Math.abs(df) === 1 && dr === (white ? 1 : -1);
+  }
+  return pieceReaches(board, from, to);
+}
+
+// Is `color`'s ('w'|'b') king attacked on this board?
+function kingInCheck(board, color) {
+  const kingSq = board.indexOf(color === 'w' ? 'K' : 'k');
+  if (kingSq < 0) return false;
+  const enemyIsWhite = color === 'b';
+  for (let i = 0; i < 64; i++) {
+    const pc = board[i];
+    if (pc === '.' || (pc === pc.toUpperCase()) !== enemyIsWhite) continue;
+    if (attacks(board, i, kingSq)) return true;
+  }
+  return false;
+}
+
 // Can a non-pawn piece on `from` slide/hop to `to` with a clear path?
 function pieceReaches(board, from, to) {
   if (from === to) return false;
@@ -123,6 +151,9 @@ function applySan(pos, sanRaw) {
       to = sqIndex(core.slice(core.indexOf('x') + 1));
       const dir = white ? -1 : 1;
       from = (rankOf(to) + dir) * 8 + fromFile;
+      // Without this, a capture SAN that doesn't fit the position "moves" an
+      // empty square and silently corrupts the board instead of failing.
+      if (pos.board[from] !== (white ? 'P' : 'p')) return null;
     } else {
       to = sqIndex(core);
       const dir = white ? -1 : 1;
@@ -161,6 +192,19 @@ function applySan(pos, sanRaw) {
   }
   if (!candidates.length) return null;
   from = candidates[0];
+  // SAN omits disambiguation when only one same-type piece can LEGALLY move
+  // there — e.g. two knights both reach f3 but one is pinned to its king.
+  // Geometry alone can pick the pinned one, silently corrupting every position
+  // after it, so keep only candidates whose move doesn't expose their king.
+  if (candidates.length > 1) {
+    const legal = candidates.filter((c) => {
+      const b = pos.board.slice();
+      b[to] = b[c];
+      b[c] = '.';
+      return !kingInCheck(b, white ? 'w' : 'b');
+    });
+    if (legal.length) from = legal[0];
+  }
   const uci = sqName(from) + sqName(to);
   return commitMove(pos, from, to, promo) ? uci : null;
 }
@@ -246,6 +290,37 @@ function toFen(pos) {
   return `${rows.join('/')} ${pos.turn} ${rights || '-'} ${ep} 0 1`;
 }
 
+// Parse a FEN string back into a position object (the inverse of toFen).
+// Returns null when the piece placement is malformed. Halfmove/fullmove
+// counters are ignored — this representation doesn't track them.
+function fromFen(fen) {
+  if (typeof fen !== 'string') return null;
+  const [placement, turn = 'w', rights = '-', ep = '-'] = fen.trim().split(/\s+/);
+  if (!placement) return null;
+  const rows = placement.split('/');
+  if (rows.length !== 8) return null;
+  const board = new Array(64).fill('.');
+  for (let r = 0; r < 8; r++) {
+    let f = 0;
+    for (const ch of rows[r]) {
+      if (ch >= '1' && ch <= '8') { f += Number(ch); continue; }
+      if (f > 7 || !/[prnbqk]/i.test(ch)) return null;
+      board[(7 - r) * 8 + f] = ch; // FEN rows run rank 8 → rank 1
+      f++;
+    }
+    if (f !== 8) return null;
+  }
+  return {
+    board,
+    turn: turn === 'b' ? 'b' : 'w',
+    castling: {
+      K: rights.includes('K'), Q: rights.includes('Q'),
+      k: rights.includes('k'), q: rights.includes('q')
+    },
+    ep: /^[a-h][1-8]$/.test(ep) ? sqIndex(ep) : -1
+  };
+}
+
 // Convenience: replay a list of SAN (or UCI) moves from the start and return
 // the resulting position. Throws on the first move that won't resolve so bad
 // repertoire data fails loudly in tests.
@@ -259,8 +334,8 @@ function replay(moves, { uci = false } = {}) {
 }
 
 const _exports = {
-  createPosition, applySan, applyUci, toFen, replay,
-  startBoard, sqName, sqIndex, pieceReaches
+  createPosition, applySan, applyUci, toFen, fromFen, replay,
+  startBoard, sqName, sqIndex, pieceReaches, attacks, kingInCheck
 };
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = _exports;

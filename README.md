@@ -1,6 +1,6 @@
-# Chess.com to Lichess Analyzer
+# Chess Coach for Chess.com
 
-Chrome extension that imports chess.com games into Lichess for unlimited Stockfish analysis. Bypasses chess.com's daily Game Review limit by leveraging Lichess's free cloud analysis (which uses a stronger Stockfish version anyway).
+Chrome extension with a real-time Stockfish coach for chess.com (move suggestions, opening recognition, and explanations in every game), plus one-click PGN import to Lichess for unlimited Stockfish analysis — bypassing chess.com's daily Game Review limit by leveraging Lichess's free cloud analysis (which uses a stronger Stockfish version anyway).
 
 ## Install (unpacked)
 

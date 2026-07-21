@@ -12,9 +12,17 @@
   const applySan = globalThis.applySan;
   const applyUci = globalThis.applyUci;
   const toFen = globalThis.toFen;
-  if (!createPosition || !applySan) return; // core failed to load
+  const fromFen = globalThis.fromFen;
+  // Explain is load-bearing for the whole panel (resultsHtml calls it
+  // unconditionally) — if any dependency failed to load, don't half-run with
+  // book arrows but a dead engine; disable the coach outright.
+  if (!createPosition || !applySan || !globalThis.ChessExplain) return;
 
   const Explain = globalThis.ChessExplain;
+  const sliceToViewedPly = globalThis.sliceToViewedPly;
+  const AiPrompt = globalThis.ChessAiPrompt;
+  const I18n = globalThis.ChessI18n;
+  const t = (key, ...args) => (I18n ? I18n.t(state.lang, key, ...args) : key);
 
   // The Stockfish engine runs in an offscreen document (see background.js /
   // offscreen.js). Content scripts on chess.com can't host the worker because
@@ -48,6 +56,10 @@
   const ARROW_ID = 'chess-coach-arrows';
   const ARROW_MIN = 1, ARROW_MAX = 5; // user-selectable arrow count (per side)
   const MAX_BOOK_PLY = 24;    // stop consulting the opening book after this depth
+  // The opponent-reply arrows are one-ply hints; search cost grows steeply with
+  // depth while the top replies barely change past this, so the second search
+  // is capped here regardless of the user's depth setting.
+  const REPLY_DEPTH = 10;
 
   // Openings offered in the picker, tagged by the side that chooses them, so the
   // dropdown can show only the openings relevant to the side you're playing.
@@ -74,21 +86,23 @@
   // since the board already shows whose piece is moving. Book move is violet.
   const RANK_COLORS = ['#22ac38', '#2b86d8', '#e0a000']; // green / blue / amber
   const BOOK_COLOR = '#9b59b6';
-  const LEGEND = [
-    { color: BOOK_COLOR, label: 'Book' },
-    { color: RANK_COLORS[0], label: 'Best' },
-    { color: RANK_COLORS[1], label: '2nd' },
-    { color: RANK_COLORS[2], label: '3rd' }
+  const legend = () => [
+    { color: BOOK_COLOR, label: t('legendBook') },
+    { color: RANK_COLORS[0], label: t('legendBest') },
+    { color: RANK_COLORS[1], label: t('legend2nd') },
+    { color: RANK_COLORS[2], label: t('legend3rd') }
   ];
 
   // enabled: the lightbulb toggle. depth: Stockfish search depth. openingId: a
   // POPULAR name to train, or null = auto-detect.
-  const state = { enabled: true, depth: 14, openingId: null, panelMin: false, arrows: 3 };
+  const state = { enabled: true, depth: 14, openingId: null, panelMin: false, arrows: 3, lang: 'en' };
   let lastSig = '';
   let lastArrowSig = '';
 
   let bridgeSans = null;
   let bridgePlayingAs = null;
+  let bridgePlyViewed = null; // ply currently on screen; null/out-of-range = end of game (live play)
+  let bridgeFen = null; // chess.com's own getFEN() for the on-screen position — ground truth, see buildView()
 
   // openings.json, lazily fetched the first time we land on a coached surface.
   let OPENINGS = null;
@@ -97,7 +111,13 @@
 
   //   status: 'idle' | 'running' | 'done' | 'error'
   const engineState = { sig: null, status: 'idle', result: null };
-  let pendingUci = null;
+  let pendingView = null;
+
+  // Gemini explanation of the current best move, fetched on demand (user
+  // clicks "Explain") — never automatically, see plan.md Phase 7 cost control.
+  //   key: cacheKeyFor-style string identifying which position this belongs to
+  //   status: 'idle' | 'running' | 'done' | 'error'
+  const explainState = { key: null, status: 'idle', data: null, error: null };
   // Circuit breaker: after repeated failures, stop touching the engine for the
   // rest of the session so a broken Stockfish can never be spawned in a loop.
   let engineFailures = 0;
@@ -118,6 +138,8 @@
     if (!d || d.__chessCoach !== 'moves') return;
     bridgeSans = Array.isArray(d.sans) ? d.sans : [];
     bridgePlayingAs = d.playingAs ?? null;
+    bridgePlyViewed = typeof d.plyViewed === 'number' ? d.plyViewed : null;
+    bridgeFen = typeof d.fen === 'string' ? d.fen : null;
     lastSig = '';
     schedule(50);
   });
@@ -185,23 +207,60 @@
     );
   }
 
-  // ---- moves -----------------------------------------------------------------
-  function sanToUci(sans) {
+  // ---- position view ----------------------------------------------------------
+  const clonePos = (p) => ({ board: p.board.slice(), turn: p.turn, castling: { ...p.castling }, ep: p.ep });
+
+  // Board, turn and castling only. En passant is skipped on purpose: our toFen
+  // records the ep square after every double push, while chess.com's FEN may
+  // list it only when a capture is actually possible — comparing that field
+  // would flag a phantom "desync" on ordinary pawn moves and stall the coach
+  // for a whole ply. Halfmove/fullmove counters we don't track at all.
+  const fenCore = (fen) => (typeof fen === 'string' ? fen.split(' ').slice(0, 3).join(' ') : null);
+
+  let lastDesyncWarn = '';
+
+  // One consistent description of the position to coach, computed per render:
+  //   uci    — the viewed moves replayed from the start (short if parsing broke)
+  //   pos    — the position to analyze
+  //   fen    — its FEN: the engine input and the analysis cache key
+  //   synced — our replay provably matches the live board, so move-list-derived
+  //            features (the opening book) can be trusted
+  //
+  // The SAN replay can go wrong two ways: applySan fails outright on a move
+  // (uci comes up short), or — worse — resolves an ambiguous SAN to the wrong
+  // piece and silently corrupts every later position. Either way Stockfish
+  // would confidently describe a board that isn't the one on screen ("gives
+  // check" when it doesn't, wrong side to move). So the replay is verified
+  // against chess.com's own getFEN() (ground truth, forwarded by the bridge);
+  // on any disagreement the coach analyzes THAT FEN directly instead — engine
+  // arrows/eval/explain keep working, only book hints pause. Returns null only
+  // when the replay broke AND no ground-truth FEN is available.
+  function buildView() {
+    const viewedSans = sliceToViewedPly ? sliceToViewedPly(bridgeSans || [], bridgePlyViewed) : (bridgeSans || []);
     const pos = createPosition();
     const uci = [];
-    for (const s of sans) {
+    let parseOk = true;
+    for (const s of viewedSans) {
       const u = applySan(pos, s);
-      if (!u) break;
+      if (!u) { parseOk = false; break; }
       uci.push(u);
     }
-    return uci;
-  }
+    const real = fenCore(bridgeFen);
+    if (parseOk && (!real || fenCore(toFen(pos)) === real)) {
+      return { uci, pos, fen: toFen(pos), synced: true };
+    }
 
-  // Replay a UCI list and return the resulting position.
-  function replayMoves(uci) {
-    const pos = createPosition();
-    for (const u of uci) { if (!applyUci(pos, u)) break; }
-    return pos;
+    const warnKey = (bridgeFen || 'no-fen') + '@' + viewedSans.length;
+    if (warnKey !== lastDesyncWarn) {
+      lastDesyncWarn = warnKey;
+      console.warn("[chess-coach] move-list replay does not match the live board — coaching from chess.com's FEN", {
+        parseOk, failedAt: parseOk ? null : viewedSans[uci.length],
+        ours: fenCore(toFen(pos)), real, plyViewed: bridgePlyViewed
+      });
+    }
+    const fallback = bridgeFen && fromFen ? fromFen(bridgeFen) : null;
+    if (!fallback) return null;
+    return { uci, pos: fallback, fen: toFen(fallback), synced: false };
   }
 
   // ---- openings (ECO) --------------------------------------------------------
@@ -293,11 +352,13 @@
   }
 
   // ---- engine (continuous, bot/analysis only) --------------------------------
-  function curSig(uci) { return state.depth + ':' + state.arrows + '@' + uci.join(','); }
+  // Keyed by the position's FEN (not the move order) — transpositions share one
+  // search, and the FEN-fallback view (see buildView) needs no move list at all.
+  function curSig(view) { return state.depth + ':' + state.arrows + '@' + view.fen; }
 
-  function maybeAnalyze(uci) {
+  function maybeAnalyze(view) {
     if (engineDead || !engineAvailable() || !Explain) return;
-    const sig = curSig(uci);
+    const sig = curSig(view);
     // Already running, done, OR errored for this exact position+depth — leave it
     // be. Critically, a failed search must NOT be retried for the same position:
     // doing so loops render→runEngine→error→render and respawns the Stockfish
@@ -305,43 +366,48 @@
     // changes (which yields a new sig).
     if (engineState.sig === sig) return;
     // A different position is mid-search: remember the latest, run it next.
-    if (engineState.status === 'running') { pendingUci = uci; return; }
-    runEngine(uci, sig);
+    if (engineState.status === 'running') { pendingView = view; return; }
+    runEngine(view, sig);
   }
 
-  async function runEngine(uci, sig) {
+  async function runEngine(view, sig) {
     engineState.sig = sig;
     engineState.status = 'running';
     engineState.result = null;
     lastSig = '';
     render(detectContext());
     try {
-      const pos = replayMoves(uci);
-      const fen = toFen(pos);
-      const sideToMove = uci.length % 2 === 0 ? 'w' : 'b';
-      const r = await engineGo(fen, { depth: state.depth, multipv: state.arrows });
+      const pos = view.pos;
+      const r = await engineGo(view.fen, { depth: state.depth, multipv: state.arrows });
       engineFailures = 0; // a clean search resets the breaker
       if (engineState.sig !== sig) return; // user moved on
 
-      // Second search: the other side's top replies AFTER the best move, so the
-      // opponent gets candidate arrows too (symmetric with yours).
-      let replyLines = [], replyPos = null;
-      const best = r.lines && r.lines[0];
-      if (best && best.move) {
-        try {
-          replyPos = replayMoves([...uci, best.move]);
-          const r2 = await engineGo(toFen(replyPos), { depth: state.depth, multipv: state.arrows });
-          if (engineState.sig !== sig) return;
-          replyLines = r2.lines || [];
-        } catch { replyPos = null; }
-      }
+      // Publish immediately: arrows, eval and the Explain button need nothing
+      // from the reply search, so the user shouldn't stare at "Analysing…"
+      // while a second search runs. The reply arrows stream in afterwards.
+      engineState.result = {
+        lines: r.lines || [], pv: r.pv || [], score: r.score, pos, sideToMove: pos.turn,
+        replyLines: [], replyPos: null
+      };
+      engineState.status = 'done';
+      lastSig = '';
+      render(detectContext());
 
-      if (engineState.sig === sig) {
-        engineState.result = {
-          lines: r.lines || [], pv: r.pv || [], score: r.score, pos, sideToMove,
-          replyLines, replyPos
-        };
-        engineState.status = 'done';
+      // Second search: the other side's top replies AFTER the best move, so the
+      // opponent gets candidate arrows too (symmetric with yours). Skipped when
+      // a newer position is already waiting — its main search matters more than
+      // this position's hint arrows.
+      const best = r.lines && r.lines[0];
+      if (best && best.move && !pendingView) {
+        try {
+          const after = clonePos(pos);
+          if (applyUci(after, best.move)) {
+            const r2 = await engineGo(toFen(after), { depth: Math.min(state.depth, REPLY_DEPTH), multipv: state.arrows });
+            if (engineState.sig !== sig) return;
+            engineState.result.replyLines = r2.lines || [];
+            engineState.result.replyPos = after;
+          }
+        } catch {} // reply arrows are optional — keep the published main result
       }
     } catch (e) {
       // DOMException doesn't subclass Error, so logging it bare prints the
@@ -358,7 +424,163 @@
     }
     lastSig = '';
     render(detectContext());
-    if (pendingUci) { const p = pendingUci; pendingUci = null; maybeAnalyze(p); }
+    if (pendingView) { const p = pendingView; pendingView = null; maybeAnalyze(p); }
+  }
+
+  // ---- Gemini explanation (on demand) -----------------------------------------
+  // SAN of a move including a trailing '+' when it gives check — our core SAN
+  // omits check/mate marks, but they're worth grounding so the model can say
+  // "with check" only when it's actually true.
+  function sanChecked(pos, uci) {
+    const f = Explain.moveFacts(pos, uci);
+    if (!f) return Explain.sanOf(pos, uci);
+    return f.san + (f.givesCheck ? '+' : '');
+  }
+
+  // Replay a UCI line from `startPos` and return its moves in SAN (with check
+  // marks). moveFacts reads the pre-move position without mutating it, so the
+  // facts are computed before applyUci advances the board.
+  function lineToSan(startPos, uciLine) {
+    const pos = clonePos(startPos);
+    const out = [];
+    for (const u of uciLine || []) {
+      const f = Explain.moveFacts(pos, u);
+      if (!applyUci(pos, u)) break;
+      out.push(f ? f.san + (f.givesCheck ? '+' : '') : u);
+    }
+    return out;
+  }
+
+  // A plain-English, board-grounded description of a move — "White knight
+  // g1–f3, capturing the bishop, giving check". Built from moveFacts (which
+  // reads the real board), so the piece names are always correct; this is what
+  // we hand Gemini instead of a bare UCI string, whose piece identity it would
+  // otherwise have to (and often does wrongly) infer from the FEN.
+  function describeMove(uci, facts) {
+    const from = uci.slice(0, 2), to = uci.slice(2, 4);
+    const white = facts.pieceChar === facts.pieceChar.toUpperCase();
+    const color = white ? 'White' : 'Black';
+    let s = facts.isCastle
+      ? `${color} castles (${facts.san})`
+      : `${color} ${Explain.pieceName(facts.pieceChar, 'en')} ${from}–${to}`;
+    if (facts.captured) s += `, capturing the ${Explain.pieceName(facts.captured, 'en')}`;
+    if (facts.promo) s += `, promoting to a ${Explain.pieceName(facts.promo, 'en')}`;
+    if (facts.givesCheck) s += ', giving check';
+    return s;
+  }
+
+  // Shape data for the AI service from the already-computed engine result —
+  // never the raw Stockfish log (see plan.md Phase 1). Moves are pre-resolved
+  // to SAN and an explicit piece description here (from the real board) so the
+  // model never has to read piece identities out of the FEN itself.
+  // The move actually played from the analyzed position — known only when the
+  // user is reviewing history (the viewed ply sits before the end of the game;
+  // the next SAN in the record is what was played from here). Validated by
+  // replaying it against the analyzed position itself, so a desynced move list
+  // can never attach a move that is illegal on this board.
+  function playedFromHere(pos) {
+    const all = bridgeSans || [];
+    const viewed = sliceToViewedPly ? sliceToViewedPly(all, bridgePlyViewed) : all;
+    if (viewed.length >= all.length) return null; // live head: nothing played yet
+    const clone = clonePos(pos);
+    const uci = applySan(clone, all[viewed.length]);
+    if (!uci) return null;
+    const facts = Explain.moveFacts(pos, uci);
+    return {
+      san: sanChecked(pos, uci),
+      description: facts ? describeMove(uci, facts) : null
+    };
+  }
+
+  function buildExplainInput(res) {
+    const best = res.lines && res.lines[0];
+    if (!best || !best.move) return null;
+    const pos = res.pos;
+    const facts = Explain.moveFacts(pos, best.move);
+    const played = playedFromHere(pos);
+    return {
+      fen: toFen(pos),
+      bestMove: best.move,
+      bestSan: sanChecked(pos, best.move),
+      moveDescription: facts ? describeMove(best.move, facts) : null,
+      playedMove: played ? played.san : null,
+      playedDescription: played ? played.description : null,
+      userSide: mapSide(bridgePlayingAs) || detectUserSide() || 'w',
+      eval: best.score,
+      depth: best.depth || state.depth,
+      pv: (best.pv || []).slice(0, 8),
+      pvSan: lineToSan(pos, best.pv || []).slice(0, 8),
+      topMoves: res.lines.slice(0, 4).filter((l) => l.move)
+        .map((l) => ({ move: l.move, san: sanChecked(pos, l.move), eval: l.score })),
+      lang: state.lang
+    };
+  }
+
+  function requestExplain(data) {
+    const key = AiPrompt ? AiPrompt.cacheKeyFor(data) : `${data.fen}|${data.bestMove}|${data.depth}`;
+    if (explainState.key === key && explainState.status !== 'idle') return; // already fetching/fetched
+    explainState.key = key;
+    explainState.status = 'running';
+    explainState.data = null;
+    explainState.error = null;
+    lastSig = '';
+    render(detectContext());
+    try {
+      chrome.runtime.sendMessage({ type: 'CC_EXPLAIN', data }, (resp) => {
+        if (explainState.key !== key) return; // user moved on to a different position
+        const err = chrome.runtime.lastError;
+        if (err) { explainState.status = 'error'; explainState.error = err.message; }
+        else if (resp && resp.error) { explainState.status = 'error'; explainState.error = resp.error; }
+        else if (resp && resp.result) { explainState.status = 'done'; explainState.data = resp.result; }
+        else { explainState.status = 'error'; explainState.error = 'no response'; }
+        lastSig = '';
+        render(detectContext());
+      });
+    } catch (e) {
+      explainState.status = 'error';
+      explainState.error = e && e.message ? e.message : String(e);
+    }
+  }
+
+  // Renders the Explain button, its loading/error state, or the result — a
+  // self-contained row like resultsHtml(), recomputing haveEngine itself.
+  function explainHtml(view) {
+    if (!AiPrompt) return '';
+    const haveEngine = engineState.status === 'done' && engineState.sig === curSig(view) && engineState.result;
+    if (!haveEngine) return '';
+
+    const data = buildExplainInput(engineState.result);
+    const skip = AiPrompt.shouldSkipExplain(data);
+    if (skip.skip) {
+      return `<div class="cc-prow cc-explain"><span class="cc-chip cc-info">${esc(skip.reason)}</span></div>`;
+    }
+
+    const key = AiPrompt.cacheKeyFor(data);
+    if (explainState.key !== key || explainState.status === 'idle') {
+      return `<div class="cc-prow cc-explain"><button class="cc-explain-btn" data-act="explain">${esc(t('explainThisMove'))}</button></div>`;
+    }
+    if (explainState.status === 'running') {
+      return `<div class="cc-prow cc-explain"><span class="cc-chip cc-info">${esc(t('analysing'))}</span></div>`;
+    }
+    if (explainState.status === 'error') {
+      return `<div class="cc-prow cc-explain">
+        <span class="cc-chip cc-info" title="${esc(explainState.error || '')}">${esc(t('explainFailed'))}</span>
+        <button class="cc-explain-btn" data-act="explain">${esc(t('retry'))}</button>
+      </div>`;
+    }
+
+    const d = explainState.data;
+    const lineHtml = (d.line && d.line.length)
+      ? d.line.map((s) => `<span class="cc-lstep">${esc(s)}</span>`).join('')
+      : '';
+    return `<div class="cc-prow cc-explain-result">
+      ${d.assessment ? `<div class="cc-erow"><b>${esc(t('assessment'))}</b> ${esc(d.assessment)}</div>` : ''}
+      ${d.whyBest ? `<div class="cc-erow"><b>${esc(t('bestMoveLabel'))}</b> ${esc(d.whyBest)}</div>` : ''}
+      ${d.opponentReply ? `<div class="cc-erow"><b>${esc(t('replyLabel'))}</b> ${esc(d.opponentReply)}</div>` : ''}
+      ${d.plan ? `<div class="cc-erow"><b>${esc(t('planLabel'))}</b> ${esc(d.plan)}</div>` : ''}
+      ${lineHtml ? `<div class="cc-erow"><b>${esc(t('lineLabel'))}</b><span class="cc-lsteps">${lineHtml}</span></div>` : ''}
+      ${d.alternatives ? `<div class="cc-erow"><b>${esc(t('alternativesLabel'))}</b> ${esc(d.alternatives)}</div>` : ''}
+    </div>`;
   }
 
   // ---- arrows ----------------------------------------------------------------
@@ -374,10 +596,12 @@
   // Render-ready arrows. Each carries a resolved colour (by side + rank) so the
   // drawer stays dumb. z-order: book first, then candidates, reply last.
   //   { uci, color, dim? }
-  function computeArrows(uci, haveEngine) {
+  function computeArrows(view, haveEngine) {
     const arrows = [];
-    const opening = detectOpening(uci);
-    const bm = bookMove(uci, opening);
+    // Book hints need the move sequence; when the view fell back to the raw
+    // board FEN (synced=false) the move list is exactly what proved unreliable.
+    const opening = view.synced ? detectOpening(view.uci) : null;
+    const bm = view.synced ? bookMove(view.uci, opening) : null;
     if (bm) arrows.push({ uci: bm, color: BOOK_COLOR });
 
     if (haveEngine) {
@@ -467,6 +691,10 @@
     el = document.createElement('div');
     el.id = BAR_ID;
     el.className = 'chess-coach-bar';
+    // A dedicated slot for the bulb's HTML, so content.js can insert the
+    // "Analyze on Lichess" button as a sibling without it getting wiped out
+    // by this file's innerHTML re-renders below.
+    el.innerHTML = '<span id="cc-bulb-slot" class="cc-bulb-slot"></span>';
     (document.body || document.documentElement).appendChild(el);
     return el;
   }
@@ -507,8 +735,8 @@
     // Show only openings for the side you're playing; always keep the current
     // pick visible even if it belongs to the other side.
     const list = all.filter((o) => o.side === userSide || o.name === state.openingId);
-    const sideLabel = userSide === 'b' ? 'Black' : 'White';
-    let opts = `<option value=""${!state.openingId ? ' selected' : ''}>Auto-detect (${sideLabel})</option>`;
+    const sideLabel = userSide === 'b' ? t('sideBlack') : t('sideWhite');
+    let opts = `<option value=""${!state.openingId ? ' selected' : ''}>${esc(t('autoDetect', sideLabel))}</option>`;
     for (const o of list) {
       opts += `<option value="${esc(o.name)}"${state.openingId === o.name ? ' selected' : ''}>${esc(o.name)}</option>`;
     }
@@ -516,29 +744,29 @@
   }
 
   // Compact, inline result chips for the single-line layout.
-  function resultsHtml(uci) {
-    const sideToMove = uci.length % 2 === 0 ? 'w' : 'b';
+  function resultsHtml(view) {
+    const sideToMove = view.pos.turn;
     const userSide = mapSide(bridgePlayingAs) || detectUserSide() || 'w';
-    const opening = detectOpening(uci);
     let chips = '';
 
-    const bm = bookMove(uci, opening);
+    const opening = view.synced ? detectOpening(view.uci) : null;
+    const bm = view.synced ? bookMove(view.uci, opening) : null;
     if (bm) {
-      const san = Explain.sanOf(replayMoves(uci), bm);
+      const san = Explain.sanOf(view.pos, bm);
       chips += `<span class="cc-chip cc-book">${esc(san)}</span>`;
     }
 
     if (engineDead) {
-      return chips + `<span class="cc-chip cc-info" title="Reload the page to retry">⚠ Stockfish stopped</span>`;
+      return chips + `<span class="cc-chip cc-info" title="${esc(t('reloadToRetry'))}">${esc(t('stockfishStopped'))}</span>`;
     }
     if (!engineAvailable()) {
-      return chips + `<span class="cc-chip cc-info">Stockfish unavailable</span>`;
+      return chips + `<span class="cc-chip cc-info">${esc(t('stockfishUnavailable'))}</span>`;
     }
 
-    const haveEngine = engineState.status === 'done' && engineState.sig === curSig(uci) && engineState.result;
+    const haveEngine = engineState.status === 'done' && engineState.sig === curSig(view) && engineState.result;
     if (!haveEngine) {
-      const msg = engineState.status === 'error' ? '⚠ Engine error' : `Analysing… (d${state.depth})`;
-      return chips + `<span class="cc-chip cc-info">${msg}</span>`;
+      const msg = engineState.status === 'error' ? t('engineError') : t('analysingDepth', state.depth);
+      return chips + `<span class="cc-chip cc-info">${esc(msg)}</span>`;
     }
 
     const res = engineState.result;
@@ -549,7 +777,7 @@
     if (best && best.move) {
       const san = Explain.sanOf(res.pos, best.move);
       const evalText = Explain.formatScore(best.score, !userToMove);
-      const expl = Explain.explainBest(res.pos, best.move, best.score, best.pv && best.pv[1]);
+      const expl = Explain.explainBest(res.pos, best.move, best.score, best.pv && best.pv[1], state.lang);
       const icon = userToMove ? '★' : '⚔';
       chips += `<span class="cc-chip ${moveCls}" title="${esc(expl || '')}">${icon} <b>${esc(san)}</b> ${esc(evalText)}</span>`;
     }
@@ -562,7 +790,7 @@
     if (rep.length) {
       const replyCls = userToMove ? 'cc-opp' : 'cc-good';
       const icon = userToMove ? '⚔' : '★';
-      const label = userToMove ? "Opponent's reply" : 'Your reply';
+      const label = userToMove ? t('opponentsReply') : t('yourReply');
       const sans = rep.slice(0, state.arrows).map((l) => esc(Explain.sanOf(res.replyPos, l.move)));
       chips += `<span class="cc-chip ${replyCls}" title="${esc(label)}">${icon} ${sans.join(' · ')}</span>`;
     }
@@ -573,33 +801,63 @@
   // tiny and clear of the clock. The opening name lives in the panel header.
   function buildBar() {
     const lit = state.enabled;
-    return `<button class="cc-bulb${lit ? ' cc-bulb--on' : ''}" data-act="toggle" title="${lit ? 'Turn coaching off' : 'Turn coaching on'}" aria-label="Toggle coaching">💡</button>`;
+    return `<button class="cc-bulb${lit ? ' cc-bulb--on' : ''}" data-act="toggle" title="${esc(lit ? t('turnCoachingOff') : t('turnCoachingOn'))}" aria-label="${esc(t('toggleCoaching'))}">
+      <svg class="cc-bulb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/>
+        <path d="M9 18h6"/>
+        <path d="M10 22h4"/>
+      </svg>
+    </button>`;
   }
 
   // Bottom-right of the screen: settings + results, with a minimize/expand button.
-  function buildPanel(ctx, uci) {
+  function buildPanel(ctx, view) {
     const min = state.panelMin;
-    const opening = detectOpening(uci);
-    const titleText = opening ? `${opening.eco} · ${opening.name}` : (OPENINGS ? 'Out of book' : 'Coach');
+    const opening = view.synced ? detectOpening(view.uci) : null;
+    const titleText = opening ? `${opening.eco} · ${opening.name}` : (OPENINGS ? t('outOfBook') : t('coach'));
+    const minMaxLabel = min ? t('expand') : t('minimize');
     const header = `<div class="cc-phead">
       <span class="cc-ptitle" title="${esc(titleText)}">♞ ${esc(titleText)}</span>
-      <button class="cc-pbtn" data-act="panelmin" title="${min ? 'Expand' : 'Minimize'}" aria-label="${min ? 'Expand' : 'Minimize'}">${min ? '▢' : '—'}</button>
+      <button class="cc-pbtn" data-act="panelmin" title="${esc(minMaxLabel)}" aria-label="${esc(minMaxLabel)}">${min ? '▢' : '—'}</button>
     </div>`;
     if (min) return header;
-    const legend = LEGEND.map((it) =>
+    const legendHtml = legend().map((it) =>
       `<span class="cc-lg"><i style="background:${it.color}"></i>${esc(it.label)}</span>`
     ).join('');
 
     const userSide = mapSide(bridgePlayingAs) || detectUserSide() || 'w';
     return header + `<div class="cc-pbody">
       <div class="cc-prow">${openingPicker(userSide)}</div>
-      <label class="cc-prow cc-depth">Depth <output data-cc-depth-val>${state.depth}</output>
+      <label class="cc-prow cc-depth">${esc(t('depth'))} <output data-cc-depth-val>${state.depth}</output>
         <input type="range" min="6" max="22" step="1" value="${state.depth}" data-cc-depth></label>
-      <label class="cc-prow cc-depth">Arrows <output data-cc-arrows-val>${state.arrows}</output>
+      <label class="cc-prow cc-depth">${esc(t('arrows'))} <output data-cc-arrows-val>${state.arrows}</output>
         <input type="range" min="${ARROW_MIN}" max="${ARROW_MAX}" step="1" value="${state.arrows}" data-cc-arrows></label>
-      <div class="cc-prow cc-results">${resultsHtml(uci)}</div>
-      <div class="cc-prow cc-legend">${legend}</div>
+      <div class="cc-prow cc-results">${resultsHtml(view)}</div>
+      ${explainHtml(view)}
+      <div class="cc-prow cc-legend">${legendHtml}</div>
     </div>`;
+  }
+
+  // The position we'd analyze doesn't (yet) match what's really on screen —
+  // see the two checks in render() below. Rather than leave stale arrows/panel
+  // content up (which is exactly the "confidently wrong suggestion" bug this
+  // guards against), clear them and show a small syncing state instead.
+  function showOutOfSync(bar, panel) {
+    clearArrows();
+    bar.style.display = '';
+    bar.className = 'chess-coach-bar';
+    (bar.querySelector('#cc-bulb-slot') || bar).innerHTML = buildBar();
+    bindBar(bar);
+    if (state.enabled) {
+      panel.style.display = '';
+      panel.className = 'chess-coach-panel' + (state.panelMin ? ' is-min' : '');
+      const header = `<div class="cc-phead"><span class="cc-ptitle">♞ ${esc(t('coach'))}</span></div>`;
+      panel.innerHTML = state.panelMin ? header :
+        header + `<div class="cc-pbody"><div class="cc-prow"><span class="cc-chip cc-info">${esc(t('syncing'))}</span></div></div>`;
+    } else {
+      panel.style.display = 'none';
+    }
+    lastSig = '';
   }
 
   // ---- render ----------------------------------------------------------------
@@ -621,15 +879,24 @@
     // heavy WASM — stays on-demand and only fires while coaching is on.
     loadOpenings();
 
-    const uci = sanToUci(bridgeSans || []);
+    // The position to coach, verified against chess.com's own FEN (or rebuilt
+    // straight from that FEN when our move-list replay can't be trusted — see
+    // buildView). Null only when the replay broke AND no ground truth exists.
+    const view = buildView();
+    if (!view) {
+      showOutOfSync(bar, panel);
+      schedule(200);
+      return;
+    }
 
     // Kick off / refresh continuous analysis only while coaching is on.
-    if (state.enabled) maybeAnalyze(uci);
+    if (state.enabled) maybeAnalyze(view);
 
     // Arrows (independent of the bar's text so a board re-render can't strand them).
-    const haveEngine = engineState.status === 'done' && engineState.sig === curSig(uci) && engineState.result;
-    const arrows = state.enabled ? computeArrows(uci, haveEngine) : [];
-    const arrowSig = (isFlipped() ? 'f|' : 'n|') + arrows.map((a) => a.color + a.uci).join('|');
+    const haveEngine = engineState.status === 'done' && engineState.sig === curSig(view) && engineState.result;
+    const arrows = state.enabled ? computeArrows(view, haveEngine) : [];
+    const arrowSig = (isFlipped() ? 'f|' : 'n|') + view.fen + '|' +
+      arrows.map((a) => a.color + a.uci).join('|');
     if (arrowSig !== lastArrowSig || !document.getElementById(ARROW_ID)) {
       drawArrows(arrows);
       lastArrowSig = arrowSig;
@@ -639,18 +906,18 @@
     panel.style.display = showPanel ? '' : 'none';
 
     const sig = [ctx, state.enabled, state.panelMin, showPanel, state.openingId || 'auto',
-      state.depth, uci.join(','), engineState.status, engineState.sig, !!OPENINGS].join('|');
+      state.depth, view.fen, view.synced, engineState.status, engineState.sig, !!OPENINGS].join('|');
     if (sig === lastSig) return;
     lastSig = sig;
 
     bar.className = 'chess-coach-bar';
-    bar.innerHTML = buildBar();
+    (bar.querySelector('#cc-bulb-slot') || bar).innerHTML = buildBar();
     bindBar(bar);
 
     if (showPanel) {
       panel.className = 'chess-coach-panel' + (state.panelMin ? ' is-min' : '');
-      panel.innerHTML = buildPanel(ctx, uci);
-      bindPanel(panel);
+      panel.innerHTML = buildPanel(ctx, view);
+      bindPanel(panel, view);
     }
   }
 
@@ -665,7 +932,14 @@
     });
   }
 
-  function bindPanel(el) {
+  function bindPanel(el, view) {
+    el.querySelector('[data-act="explain"]')?.addEventListener('click', () => {
+      const haveEngine = engineState.status === 'done' && engineState.sig === curSig(view) && engineState.result;
+      if (!haveEngine) return;
+      const data = buildExplainInput(engineState.result);
+      if (data) requestExplain(data);
+    });
+
     el.querySelector('[data-act="panelmin"]')?.addEventListener('click', () => {
       state.panelMin = !state.panelMin;
       save();
@@ -744,13 +1018,22 @@
   }
 
   try {
-    chrome.storage.local.get(['ccEnabled', 'ccDepth', 'ccOpening', 'ccPanelMin', 'ccArrows'], (o) => {
+    chrome.storage.local.get(['ccEnabled', 'ccDepth', 'ccOpening', 'ccPanelMin', 'ccArrows', 'ccLanguage'], (o) => {
       state.enabled = o.ccEnabled !== false;
       state.depth = Math.max(6, Math.min(22, o.ccDepth || 14));
       state.openingId = o.ccOpening || null;
       state.panelMin = !!o.ccPanelMin;
       state.arrows = Math.max(ARROW_MIN, Math.min(ARROW_MAX, o.ccArrows || 3));
+      state.lang = o.ccLanguage === 'vi' ? 'vi' : 'en';
       start();
+    });
+    // The language lives on the options page, a separate context — pick up a
+    // change immediately instead of requiring a chess.com page reload.
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local' || !changes.ccLanguage) return;
+      state.lang = changes.ccLanguage.newValue === 'vi' ? 'vi' : 'en';
+      lastSig = '';
+      render(detectContext());
     });
   } catch {
     start();
