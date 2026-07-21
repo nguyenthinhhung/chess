@@ -55,7 +55,7 @@ test('buildExplainPrompt embeds FEN, best move, and top moves', () => {
     pv: ['g8f6', 'b1c3'],
     topMoves: [{ move: 'g8f6', eval: { type: 'cp', value: 30 } }]
   });
-  assert.match(system, /Ground every statement ONLY in the data given/);
+  assert.match(system, /Stay anchored/);
   assert.match(user, /g8f6/);
   assert.match(user, /Candidate moves/);
 });
@@ -100,13 +100,13 @@ const BASE = {
 test('buildExplainPrompt frames everything for the coached side', () => {
   const { system, user } = buildExplainPrompt({ ...BASE, userSide: 'b' });
   assert.match(system, /coaching the Black player/);
-  assert.match(system, /never write as if you were advising the opponent/);
+  assert.match(system, /never advise the opponent/);
   assert.match(user, /Coached player: Black/);
 });
 
-test('buildExplainPrompt live (no played move): opponentReply reads from the PV', () => {
+test('buildExplainPrompt live (no played move): opponentReply reads the opponent intent', () => {
   const { system, user } = buildExplainPrompt({ ...BASE });
-  assert.match(system, /second move of the principal variation/);
+  assert.match(system, /what the opponent intends after the best move/);
   assert.doesNotMatch(system, /move actually played/);
   assert.doesNotMatch(user, /Move actually played/);
 });
@@ -116,9 +116,9 @@ test('buildExplainPrompt review (played move known): compares best vs played', (
     ...BASE, playedMove: 'd5', playedDescription: 'Black pawn d7–d5'
   });
   assert.match(user, /Move actually played from this position: d5 \(Black pawn d7–d5\)/);
-  assert.match(system, /compared to the move actually played/);
-  assert.match(system, /exploit the move actually played/);
+  assert.match(system, /how the move actually played compares/);
+  assert.match(system, /what the opponent is trying to achieve in return/);
   // The grounding guardrails must survive the review framing.
-  assert.match(system, /Do NOT invent threats/);
+  assert.match(system, /do NOT claim a winning tactic/);
   assert.match(system, /re-derive a piece from the FEN/i);
 });

@@ -13,7 +13,7 @@ test('routes gemini_native providers to the Gemini generateContent endpoint', as
   let seenUrl;
   const fetchImpl = async (url) => {
     seenUrl = url;
-    const reply = { assessment: 's', whyBest: 'w', plan: 'p', line: [], alternatives: 'alt' };
+    const reply = { whyBest: 'w', plan: 'p', opponentReply: 'r' };
     return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify(reply) }] } }] }) };
   };
   const result = await explainMove(data, { apiKey: 'AIza_test', provider: 'gemini', fetchImpl });
@@ -25,7 +25,7 @@ test('routes openai_compatible providers (Groq) to their chat/completions endpoi
   let seenUrl;
   const fetchImpl = async (url) => {
     seenUrl = url;
-    const reply = { assessment: 's', whyBest: 'w', plan: 'p', line: [], alternatives: 'alt' };
+    const reply = { whyBest: 'w', plan: 'p', opponentReply: 'r' };
     return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify(reply) } }] }) };
   };
   const result = await explainMove(data, { apiKey: 'gsk_test', provider: 'groq', fetchImpl });

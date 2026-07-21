@@ -8,34 +8,32 @@ test('stripCodeFence removes a ```json fence', () => {
 });
 
 test('parseExplainResponse normalizes a well-formed reply', () => {
-  const text = JSON.stringify({
-    assessment: 'x', whyBest: 'y', opponentReply: 'o', plan: 'p', line: ['a', 'b'], alternatives: 'alt'
-  });
+  const text = JSON.stringify({ whyBest: 'y', plan: 'p', opponentReply: 'o' });
   const r = parseExplainResponse(text);
-  assert.equal(r.assessment, 'x');
   assert.equal(r.whyBest, 'y');
-  assert.equal(r.opponentReply, 'o');
   assert.equal(r.plan, 'p');
-  assert.deepEqual(r.line, ['a', 'b']);
-  assert.equal(r.alternatives, 'alt');
+  assert.equal(r.opponentReply, 'o');
 });
 
 test('parseExplainResponse strips a code fence first', () => {
-  const inner = { assessment: 's', whyBest: 'w', plan: 'p', line: [], alternatives: 'a' };
+  const inner = { whyBest: 'w', plan: 'p', opponentReply: 'o' };
   const r = parseExplainResponse('```json\n' + JSON.stringify(inner) + '\n```');
-  assert.equal(r.assessment, 's');
+  assert.equal(r.whyBest, 'w');
 });
 
 test('parseExplainResponse defaults missing fields instead of throwing', () => {
   const r = parseExplainResponse(JSON.stringify({ whyBest: 'only this' }));
   assert.equal(r.whyBest, 'only this');
-  assert.equal(r.assessment, '');
-  assert.deepEqual(r.line, []);
+  assert.equal(r.plan, '');
+  assert.equal(r.opponentReply, '');
 });
 
-test('parseExplainResponse ignores non-string entries in line', () => {
-  const text = JSON.stringify({ assessment: '', whyBest: '', plan: '', line: ['a', 5, null, 'b'], alternatives: '' });
-  assert.deepEqual(parseExplainResponse(text).line, ['a', 'b']);
+test('parseExplainResponse ignores non-string field values', () => {
+  const text = JSON.stringify({ whyBest: 42, plan: null, opponentReply: 'o' });
+  const r = parseExplainResponse(text);
+  assert.equal(r.whyBest, '');
+  assert.equal(r.plan, '');
+  assert.equal(r.opponentReply, 'o');
 });
 
 test('parseExplainResponse throws AiParseError on invalid JSON', () => {

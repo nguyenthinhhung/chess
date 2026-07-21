@@ -14,33 +14,29 @@ const _pbI18n = _pbIsNode ? require('../i18n.js') : globalThis.ChessI18n;
 
 const LANG_NAMES = { vi: 'Vietnamese' };
 
-// Every field maps to something Stockfish actually returned (its score, its
-// principal variation, its multipv candidates) or a plain board fact about the
-// move — nothing the model has to invent. Deliberately dropped from the old
-// schema: free-form "strategy"/"tactics", long-term "nextPlan", a guessed
-// "commonMistake", and a 1–5 "difficulty" — all AI speculation the engine
-// never gave us.
-//   assessment    — what the evaluation number means (who's better, by how much)
-//   whyBest       — what the best move concretely does and why the engine picks it
+// The division of labour: Stockfish's own numbers (evaluation, candidate moves
+// with their scores, the principal variation) are shown directly as chips in
+// the panel, so the model must NOT just re-narrate them. Its job is the layer
+// the numbers don't give — the human strategic plan. So the schema keeps only
+// the three fields that add that: what the best move does, the middlegame plan
+// behind it, and what the opponent is trying to do. Deliberately dropped: the
+// old "assessment" (= the eval chip), "line" (= the PV arrows), and
+// "alternatives" (= the candidate chips) — all duplicated Stockfish output.
+//   whyBest       — what the best move concretely does and the idea behind it
 //                   (or, when reviewing a played move, how it compares to it)
-//   opponentReply — the expected answer to the best move (PV move 2), or how the
-//                   opponent punishes a weak played move — still PV-grounded
-//   plan          — the idea/plan behind it, but ONLY as shown by the line (this
-//                   absorbs the old strategy/tactics/nextPlan fields, kept useful
-//                   but now anchored to the PV instead of free invention)
-//   line          — the principal variation narrated move by move
-//   alternatives  — the other candidate moves and how much worse they are
+//   plan          — a concrete middlegame plan for the coached side over the
+//                   next several moves, drawn from standard strategic themes and
+//                   matched to the pawn structure on THIS board
+//   opponentReply — what the opponent is trying to achieve and what the coached
+//                   player should watch for / prepare against
 const EXPLAIN_SCHEMA = {
   type: 'object',
   properties: {
-    assessment: { type: 'string' },
     whyBest: { type: 'string' },
-    opponentReply: { type: 'string' },
     plan: { type: 'string' },
-    line: { type: 'array', items: { type: 'string' } },
-    alternatives: { type: 'string' }
+    opponentReply: { type: 'string' }
   },
-  required: ['assessment', 'whyBest', 'opponentReply', 'plan', 'line', 'alternatives']
+  required: ['whyBest', 'plan', 'opponentReply']
 };
 
 function fmtEval(score) {
@@ -63,9 +59,29 @@ function shouldSkipExplain(data) {
 
 // Bump when the prompt shape changes in a way that makes older cached answers
 // wrong or worse (e.g. the SAN/piece-description grounding added in v2, the
-// coached-side perspective + opponentReply field added in v4), so stale
-// explanations aren't served from chrome.storage.local after an update.
-const EXPLAIN_CACHE_VERSION = 4;
+// coached-side perspective + opponentReply field added in v4, the strategy-first
+// 3-field schema in v5), so stale explanations aren't served from
+// chrome.storage.local after an update.
+const EXPLAIN_CACHE_VERSION = 5;
+
+// The strategic vocabulary the "plan" field draws from — a menu the model picks
+// from to match THIS position's pawn structure, not a checklist to recite. Kept
+// broad on purpose (the user asked for more than the original six themes) but
+// phrased for a ~1200-Elo student. The model is told to name concrete squares
+// and pieces, and to choose only the ideas the position actually supports.
+const STRATEGY_THEMES = [
+  'improve your worst-placed piece (a passive knight or bishop → an active square or an outpost)',
+  'fight for an open or half-open file with a rook, double rooks, or reach the 7th rank',
+  'make a pawn break to open lines for your pieces or fix a target',
+  'attack a structural weakness — an isolated (IQP), backward, doubled, or hanging pawn, or a weak square/hole; attack a pawn chain at its base',
+  'exchange your bad piece for the opponent\'s good one, relieve a cramped position, or simplify into a better endgame',
+  'a wing attack or a minority attack, matched to which side each king castled',
+  'push for or use a space advantage without over-extending, and restrain the opponent (prophylaxis)',
+  'attack the king: open lines toward it, or exploit a weakened castled position',
+  'use the bishop pair, a strong knight outpost, control of a key diagonal, or a good-vs-bad bishop imbalance',
+  'create or blockade a passed pawn; in the endgame, activate the king and use a pawn majority',
+  'the principle of two weaknesses — open a second front so the defender is stretched'
+];
 
 // A cheap, deterministic cache key (not a cryptographic hash) — unique enough
 // to key chrome.storage.local cache entries by position + search depth. Language
@@ -104,29 +120,32 @@ function buildExplainPrompt(data) {
   const hasPlayed = !!playedLine;
 
   const langName = LANG_NAMES[data.lang];
+  // Stockfish's raw numbers (eval, candidate moves + scores, the PV) are already
+  // shown to the player as chips, so this prompt is NOT for re-narrating them —
+  // it is for the strategic layer the numbers don't give. The model may reason
+  // about the pawn structure and plans (that is the point), but stays anchored:
+  // the engine's move/eval are the ceiling, and it must not fabricate forced
+  // tactics the search didn't show.
   const system = [
-    'You are a professional chess coach explaining one engine analysis to a 1200-Elo player.',
+    'You are a professional chess coach turning one engine analysis into a strategic lesson for a ~1200-Elo player.',
     data.userSide
-      ? `You are coaching the ${sideName(data.userSide)} player — "you" in your text always means that player. When the side to move is the opponent, explain what the opponent's best move threatens and how the coached player should prepare; never write as if you were advising the opponent.`
+      ? `You are coaching the ${sideName(data.userSide)} player — "you" always means that player. When it is the opponent to move, explain what the opponent is trying to do and how the coached player should prepare; never advise the opponent.`
       : null,
-    'Write for that level: plain sentences, translate evaluations into words (e.g. "+1.02" means ahead by about a pawn), and when you use a chess term, add in a few words what it concretely means here.',
-    'Ground every statement ONLY in the data given: the evaluation, the principal variation, the candidate moves, and the described best move.',
-    'Do NOT invent threats, mating nets, plans, motifs, or piece activity that are not present in the given line — if the data does not show it, do not say it.',
+    'The evaluation, the candidate moves with their scores, and the principal variation are ALREADY shown to the player as numbers. Do NOT just restate them. Your job is the human plan behind the position — the ideas the numbers do not spell out.',
+    'Write for that level: plain sentences, and when you use a chess term (outpost, minority attack, IQP…) add in a few words what it means on THIS board. Name concrete squares and pieces.',
+    'Stay anchored: keep consistent with the evaluation and treat the engine\'s best move as correct; you may explain the pawn structure and plans, but do NOT claim a winning tactic, mating net, or forced win the analysis does not support.',
     'The "Side to move" field is ground truth — never say the other color is moving.',
     'Moves are given in SAN; the best move also names exactly which piece moves and what it captures. Use those identities verbatim — never re-derive a piece from the FEN or rename one (e.g. knight vs bishop).',
-    'Fill the fields exactly: ',
-    '"assessment": who is better and by how much, read straight from the evaluation (e.g. a clear advantage, roughly equal, a forced mate) — no more than one sentence.',
+    'Fill the three fields exactly:',
     hasPlayed
-      ? '"whyBest": what the best move would have achieved compared to the move actually played, judged only by their evaluations in the candidate list; if the played move is not among the candidates, say it falls outside the engine\'s top choices rather than guessing a number; if it IS the best move, say so and praise it.'
-      : '"whyBest": what the best move concretely does (the piece, any capture or check) and why the engine prefers it, judged by its evaluation versus the alternatives.',
+      ? '"whyBest": in one or two sentences, what the engine\'s best move does and the idea behind it, and how the move actually played compares (better/worse and why); if the played move falls outside the candidate list, say so rather than inventing a number.'
+      : '"whyBest": in one or two sentences, what the best move concretely does (the piece, any capture or check) and the idea behind it — not its number.',
+    '"plan": a concrete plan for the coached side over the next 5–8 moves, chosen to fit the pawn structure. Pick the one or two most relevant of these standard ideas and make them specific to this board (which piece, which file, which break, which square):\n- ' + STRATEGY_THEMES.join('\n- ') + '\nName the plan in terms of this position, not as a generic list. Give the moves as a short idea (e.g. "reroute the knight Nc2–e3–d5") rather than a long forced line.',
     hasPlayed
-      ? '"opponentReply": how the opponent can exploit the move actually played, using only the evaluation gap and the principal variation; if the played move was the best move, describe the opponent\'s expected answer from the principal variation instead.'
-      : '"opponentReply": the expected answer to the best move — the second move of the principal variation — and what that answer is trying to achieve (defend, trade, counter-attack), stated only from what the line shows.',
-    '"plan": the idea or plan the move serves for the side to move, but ONLY as demonstrated by the principal variation (e.g. a trade the line carries out, a file it opens) — do not state a plan the line does not show.',
-    '"line": one short entry per move of the principal variation, in order, each saying that single move\'s point — do not go beyond the moves listed.',
-    '"alternatives": the other candidate moves with their evaluations and how much worse they are; if none are given, state that the best move is clearly ahead.',
-    'Keep the whole thing under 180 words.',
-    langName ? `Write every text field in ${langName}, including move descriptions.` : null,
+      ? '"opponentReply": what the opponent is trying to achieve in return and the one thing the coached player should watch for or prevent.'
+      : '"opponentReply": what the opponent intends after the best move (their own plan or counterplay) and the one thing the coached player should watch for.',
+    'Keep the whole thing under 150 words.',
+    langName ? `Write every text field in ${langName}, including chess terms where a natural translation exists.` : null,
     'Return JSON only, matching the given schema exactly.'
   ].filter(Boolean).join(' ');
 

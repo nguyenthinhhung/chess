@@ -569,17 +569,14 @@
       </div>`;
     }
 
+    // Strategy-first: Stockfish's numbers already live in the chips above, so
+    // the AI panel shows only the three fields that add the human plan —
+    // what the best move does, the middlegame plan, and the opponent's intent.
     const d = explainState.data;
-    const lineHtml = (d.line && d.line.length)
-      ? d.line.map((s) => `<span class="cc-lstep">${esc(s)}</span>`).join('')
-      : '';
     return `<div class="cc-prow cc-explain-result">
-      ${d.assessment ? `<div class="cc-erow"><b>${esc(t('assessment'))}</b> ${esc(d.assessment)}</div>` : ''}
       ${d.whyBest ? `<div class="cc-erow"><b>${esc(t('bestMoveLabel'))}</b> ${esc(d.whyBest)}</div>` : ''}
-      ${d.opponentReply ? `<div class="cc-erow"><b>${esc(t('replyLabel'))}</b> ${esc(d.opponentReply)}</div>` : ''}
       ${d.plan ? `<div class="cc-erow"><b>${esc(t('planLabel'))}</b> ${esc(d.plan)}</div>` : ''}
-      ${lineHtml ? `<div class="cc-erow"><b>${esc(t('lineLabel'))}</b><span class="cc-lsteps">${lineHtml}</span></div>` : ''}
-      ${d.alternatives ? `<div class="cc-erow"><b>${esc(t('alternativesLabel'))}</b> ${esc(d.alternatives)}</div>` : ''}
+      ${d.opponentReply ? `<div class="cc-erow"><b>${esc(t('replyLabel'))}</b> ${esc(d.opponentReply)}</div>` : ''}
     </div>`;
   }
 
@@ -781,17 +778,24 @@
       const icon = userToMove ? '★' : '⚔';
       chips += `<span class="cc-chip ${moveCls}" title="${esc(expl || '')}">${icon} <b>${esc(san)}</b> ${esc(evalText)}</span>`;
     }
+    // Alternatives carry their own eval too — the whole point of the Stockfish
+    // side is to show the numbers directly, so "d4 +0.2 · Bc4 +0.1", not bare SANs.
     const alts = res.lines.slice(1, state.arrows).filter((l) => l.move)
-      .map((l) => esc(Explain.sanOf(res.pos, l.move)));
+      .map((l) => `${esc(Explain.sanOf(res.pos, l.move))} ${esc(Explain.formatScore(l.score, !userToMove))}`);
     if (alts.length) chips += `<span class="cc-chip cc-alts">${alts.join(' · ')}</span>`;
 
-    // The other side's best reply (and a couple of alternatives).
+    // The other side's best reply (and a couple of alternatives), with evals —
+    // scored from the replying side, so flip is relative to the opponent.
     const rep = res.replyLines && res.replyPos ? res.replyLines.filter((l) => l.move) : [];
     if (rep.length) {
       const replyCls = userToMove ? 'cc-opp' : 'cc-good';
       const icon = userToMove ? '⚔' : '★';
       const label = userToMove ? t('opponentsReply') : t('yourReply');
-      const sans = rep.slice(0, state.arrows).map((l) => esc(Explain.sanOf(res.replyPos, l.move)));
+      // Reply eval is from the mover-after-best-move's POV; flip it to the user's
+      // side to match the main eval's sign convention (userToMove here is who
+      // moved FIRST, so the replier is the other side → flip when userToMove).
+      const sans = rep.slice(0, state.arrows)
+        .map((l) => `${esc(Explain.sanOf(res.replyPos, l.move))} ${esc(Explain.formatScore(l.score, userToMove))}`);
       chips += `<span class="cc-chip ${replyCls}" title="${esc(label)}">${icon} ${sans.join(' · ')}</span>`;
     }
     return chips;
