@@ -87,19 +87,23 @@
   const RANK_COLORS = ['#22ac38', '#2b86d8', '#e0a000']; // green / blue / amber
   const BOOK_COLOR = '#9b59b6';
   const rankColor = (i) => RANK_COLORS[Math.min(i, RANK_COLORS.length - 1)];
-  // Result chips share the arrows' colours (rank/book), so panel and board speak
-  // one colour language; the moving side is shown by a piece glyph, not colour.
-  const PIECE_ICON = { w: '♙', b: '♟' };
-  const tint = (hex, a) => {
-    const n = parseInt(hex.slice(1), 16);
-    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
-  };
-  // A move chip coloured like its board arrow (dim mirrors the dim reply arrows),
-  // prefixed with the moving side's piece. `text` may hold SAN + eval markup.
-  function moveChip(color, side, text, opts = {}) {
-    const style = `color:${color};background:${tint(color, opts.dim ? 0.10 : 0.18)}` + (opts.dim ? ';opacity:.8' : '');
-    const title = opts.title ? ` title="${esc(opts.title)}"` : '';
-    return `<span class="cc-chip" style="${style}"${title}>${PIECE_ICON[side] || ''} ${text}</span>`;
+  // Results are grouped one line per side (W / B tag), and each move within a
+  // line is coloured by its rank to match the board arrows (best green, then
+  // blue, amber…), so panel and board speak one colour language.
+  const moveItem = (color, san, evalText) =>
+    `<span class="cc-mv" style="color:${color}"><b>${esc(san)}</b>${evalText ? ' ' + esc(evalText) : ''}</span>`;
+  // One side's candidate line: its W/B tag then its moves (rank-coloured). Evals
+  // are shown on one shared scale — White's point of view, like an eval bar — so
+  // the two lines are directly comparable; a Black move's score (from Black's own
+  // POV) is flipped to get there. Returns '' when empty.
+  function sideLine(side, list, pos, opts = {}) {
+    if (!list || !list.length || !pos) return '';
+    const items = list.slice(0, state.arrows).filter((l) => l.move)
+      .map((l, i) => moveItem(rankColor(i), Explain.sanOf(pos, l.move), Explain.formatScore(l.score, side === 'b')))
+      .join('');
+    if (!items) return '';
+    const tag = `<span class="cc-side-tag" title="${esc(side === 'w' ? t('sideWhite') : t('sideBlack'))}"><i class="cc-dot cc-dot-${side}"></i></span>`;
+    return `<div class="cc-side-line${opts.dim ? ' cc-dim' : ''}">${tag}${items}</div>`;
   }
   const legend = () => [
     { color: BOOK_COLOR, label: t('legendBook') },
@@ -809,7 +813,7 @@
     const bm = view.synced ? bookMove(view.uci, opening) : null;
     if (bm) {
       const san = Explain.sanOf(view.pos, bm);
-      chips += moveChip(BOOK_COLOR, sideToMove, `<b>${esc(san)}</b>`, { title: t('legendBook') });
+      chips += `<div class="cc-side-line"><span class="cc-side-tag" title="${esc(t('legendBook'))}">📖</span>${moveItem(BOOK_COLOR, san, '')}</div>`;
     }
 
     if (engineDead) {
@@ -835,39 +839,28 @@
         return chips + `<span class="cc-chip cc-info">${esc(t('reviewingYourMove'))}</span>`;
       }
       const rv = res.review;
-      // Verdict: a move already played has no arrow, so it keeps its own quality
-      // colour (green → red by classification), prefixed with the user's piece.
-      chips += `<span class="cc-chip cc-cls-${rv.key}" title="${esc(rv.text || '')}">${PIECE_ICON[userSide] || ''} ${esc(rv.label)} — <b>${esc(rv.playedSan)}</b></span>`;
-      // The move you should have played — not drawn as an arrow, so a neutral chip.
+      // Verdict + the move you should have played, on one line. The verdict keeps
+      // its own quality colour (green → red) since a played move has no arrow.
+      let vline = `<div class="cc-side-line"><span class="cc-chip cc-cls-${rv.key}" title="${esc(rv.text || '')}">${esc(rv.label)} — <b>${esc(rv.playedSan)}</b></span>`;
       if (rv.bestUci && rv.bestUci !== rv.playedUci) {
-        const evalText = Explain.formatScore(rv.bestScore, false); // parent side to move is the user
-        chips += `<span class="cc-chip cc-alts">${PIECE_ICON[userSide] || ''} ${esc(t('shouldHavePlayed'))} <b>${esc(rv.bestSan)}</b> ${esc(evalText)}</span>`;
+        const evalText = Explain.formatScore(rv.bestScore, userSide === 'b'); // to White's POV, like the lines
+        vline += `<span class="cc-chip cc-alts">${esc(t('shouldHavePlayed'))} <b>${esc(rv.bestSan)}</b> ${esc(evalText)}</span>`;
       }
-      // The opponent's candidate replies DO have arrows — match their rank colours.
-      res.lines.slice(0, state.arrows).filter((l) => l.move).forEach((l, i) => {
-        const evalText = Explain.formatScore(l.score, !userToMove);
-        chips += moveChip(rankColor(i), sideToMove, `<b>${esc(Explain.sanOf(res.pos, l.move))}</b> ${esc(evalText)}`, { title: t('opponentsReply') });
-      });
+      chips += vline + '</div>';
+      // The opponent's candidate replies, on their own W/B line (they have arrows).
+      chips += sideLine(sideToMove, res.lines, res.pos, {});
       return chips;
     }
 
-    // Whoever is to move: candidate chips coloured by rank to match their arrows
-    // (best green, then blue, amber…), each prefixed with that side's piece.
-    res.lines.slice(0, state.arrows).filter((l) => l.move).forEach((l, i) => {
-      const evalText = Explain.formatScore(l.score, !userToMove);
-      const title = i === 0 ? Explain.explainBest(res.pos, l.move, l.score, l.pv && l.pv[1], state.lang) : '';
-      chips += moveChip(rankColor(i), sideToMove, `<b>${esc(Explain.sanOf(res.pos, l.move))}</b> ${esc(evalText)}`, { title });
-    });
-
-    // The other side's replies after the best move — dim, mirroring the dim reply
-    // arrows; eval flipped to the user's point of view.
-    const rep = res.replyLines && res.replyPos ? res.replyLines.filter((l) => l.move) : [];
-    const replySide = sideToMove === 'w' ? 'b' : 'w';
-    rep.slice(0, state.arrows).forEach((l, i) => {
-      const evalText = Explain.formatScore(l.score, userToMove);
-      chips += moveChip(rankColor(i), replySide, `${esc(Explain.sanOf(res.replyPos, l.move))} ${esc(evalText)}`,
-        { dim: true, title: userToMove ? t('opponentsReply') : t('yourReply') });
-    });
+    // Forward view: one line per side, White on top. The side to move gets its
+    // candidates (res.lines, solid arrows); the other side gets its replies after
+    // the best move (res.replyLines, dim arrows).
+    const mine = { list: res.lines, pos: res.pos };
+    const other = { list: res.replyLines, pos: res.replyPos };
+    const white = sideToMove === 'w' ? mine : other;
+    const black = sideToMove === 'w' ? other : mine;
+    chips += sideLine('w', white.list, white.pos, { dim: sideToMove !== 'w' });
+    chips += sideLine('b', black.list, black.pos, { dim: sideToMove !== 'b' });
     return chips;
   }
 

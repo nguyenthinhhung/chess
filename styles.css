@@ -239,8 +239,17 @@
 .cc-pbody .cc-select { flex: 1 1 auto; max-width: none; width: 100%; }
 .cc-pbody .cc-depth { font-size: 12px; }
 .cc-pbody .cc-depth input[type="range"] { flex: 1; width: auto; }
-.cc-results { display: flex; flex-wrap: wrap; gap: 6px; }
+.cc-results { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
 .cc-results:empty { display: none; }
+/* One line per side: a white/black dot (à la Lichess) then that side's moves,
+   coloured by rank. */
+.cc-side-line { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 10px; }
+.cc-side-line.cc-dim { opacity: 0.6; }
+.cc-side-tag { display: inline-flex; align-items: center; min-width: 14px; }
+.cc-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.cc-dot-w { background: #f4f4f4; border: 1px solid #9aa0a6; }
+.cc-dot-b { background: #2a2d31; border: 1px solid #9aa0a6; }
+.cc-mv { white-space: nowrap; }
 
 .cc-legend {
   display: flex;
