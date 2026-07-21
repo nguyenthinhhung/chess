@@ -86,6 +86,21 @@
   // since the board already shows whose piece is moving. Book move is violet.
   const RANK_COLORS = ['#22ac38', '#2b86d8', '#e0a000']; // green / blue / amber
   const BOOK_COLOR = '#9b59b6';
+  const rankColor = (i) => RANK_COLORS[Math.min(i, RANK_COLORS.length - 1)];
+  // Result chips share the arrows' colours (rank/book), so panel and board speak
+  // one colour language; the moving side is shown by a piece glyph, not colour.
+  const PIECE_ICON = { w: '♙', b: '♟' };
+  const tint = (hex, a) => {
+    const n = parseInt(hex.slice(1), 16);
+    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+  };
+  // A move chip coloured like its board arrow (dim mirrors the dim reply arrows),
+  // prefixed with the moving side's piece. `text` may hold SAN + eval markup.
+  function moveChip(color, side, text, opts = {}) {
+    const style = `color:${color};background:${tint(color, opts.dim ? 0.10 : 0.18)}` + (opts.dim ? ';opacity:.8' : '');
+    const title = opts.title ? ` title="${esc(opts.title)}"` : '';
+    return `<span class="cc-chip" style="${style}"${title}>${PIECE_ICON[side] || ''} ${text}</span>`;
+  }
   const legend = () => [
     { color: BOOK_COLOR, label: t('legendBook') },
     { color: RANK_COLORS[0], label: t('legendBest') },
@@ -794,7 +809,7 @@
     const bm = view.synced ? bookMove(view.uci, opening) : null;
     if (bm) {
       const san = Explain.sanOf(view.pos, bm);
-      chips += `<span class="cc-chip cc-book">${esc(san)}</span>`;
+      chips += moveChip(BOOK_COLOR, sideToMove, `<b>${esc(san)}</b>`, { title: t('legendBook') });
     }
 
     if (engineDead) {
@@ -812,7 +827,6 @@
 
     const res = engineState.result;
     const userToMove = sideToMove === userSide;
-    const moveCls = userToMove ? 'cc-good' : 'cc-opp';
 
     // Opponent to move at the live head → the user just moved. Grade that move
     // instead of showing the opponent's best as if coaching them.
@@ -821,47 +835,39 @@
         return chips + `<span class="cc-chip cc-info">${esc(t('reviewingYourMove'))}</span>`;
       }
       const rv = res.review;
-      chips += `<span class="cc-chip cc-cls-${rv.key}" title="${esc(rv.text || '')}">${esc(rv.label)} — <b>${esc(rv.playedSan)}</b></span>`;
+      // Verdict: a move already played has no arrow, so it keeps its own quality
+      // colour (green → red by classification), prefixed with the user's piece.
+      chips += `<span class="cc-chip cc-cls-${rv.key}" title="${esc(rv.text || '')}">${PIECE_ICON[userSide] || ''} ${esc(rv.label)} — <b>${esc(rv.playedSan)}</b></span>`;
+      // The move you should have played — not drawn as an arrow, so a neutral chip.
       if (rv.bestUci && rv.bestUci !== rv.playedUci) {
         const evalText = Explain.formatScore(rv.bestScore, false); // parent side to move is the user
-        chips += `<span class="cc-chip cc-good">★ ${esc(t('shouldHavePlayed'))} ${esc(rv.bestSan)} ${esc(evalText)}</span>`;
+        chips += `<span class="cc-chip cc-alts">${PIECE_ICON[userSide] || ''} ${esc(t('shouldHavePlayed'))} <b>${esc(rv.bestSan)}</b> ${esc(evalText)}</span>`;
       }
-      const oppSans = res.lines.slice(0, state.arrows).filter((l) => l.move)
-        .map((l) => esc(Explain.sanOf(res.pos, l.move)));
-      if (oppSans.length) {
-        chips += `<span class="cc-chip cc-opp" title="${esc(t('opponentsReply'))}">⚔ ${oppSans.join(' · ')}</span>`;
-      }
+      // The opponent's candidate replies DO have arrows — match their rank colours.
+      res.lines.slice(0, state.arrows).filter((l) => l.move).forEach((l, i) => {
+        const evalText = Explain.formatScore(l.score, !userToMove);
+        chips += moveChip(rankColor(i), sideToMove, `<b>${esc(Explain.sanOf(res.pos, l.move))}</b> ${esc(evalText)}`, { title: t('opponentsReply') });
+      });
       return chips;
     }
 
-    const best = res.lines[0];
-    if (best && best.move) {
-      const san = Explain.sanOf(res.pos, best.move);
-      const evalText = Explain.formatScore(best.score, !userToMove);
-      const expl = Explain.explainBest(res.pos, best.move, best.score, best.pv && best.pv[1], state.lang);
-      const icon = userToMove ? '★' : '⚔';
-      chips += `<span class="cc-chip ${moveCls}" title="${esc(expl || '')}">${icon} <b>${esc(san)}</b> ${esc(evalText)}</span>`;
-    }
-    // Alternatives carry their own eval too — the whole point of the Stockfish
-    // side is to show the numbers directly, so "d4 +0.2 · Bc4 +0.1", not bare SANs.
-    const alts = res.lines.slice(1, state.arrows).filter((l) => l.move)
-      .map((l) => `${esc(Explain.sanOf(res.pos, l.move))} ${esc(Explain.formatScore(l.score, !userToMove))}`);
-    if (alts.length) chips += `<span class="cc-chip cc-alts">${alts.join(' · ')}</span>`;
+    // Whoever is to move: candidate chips coloured by rank to match their arrows
+    // (best green, then blue, amber…), each prefixed with that side's piece.
+    res.lines.slice(0, state.arrows).filter((l) => l.move).forEach((l, i) => {
+      const evalText = Explain.formatScore(l.score, !userToMove);
+      const title = i === 0 ? Explain.explainBest(res.pos, l.move, l.score, l.pv && l.pv[1], state.lang) : '';
+      chips += moveChip(rankColor(i), sideToMove, `<b>${esc(Explain.sanOf(res.pos, l.move))}</b> ${esc(evalText)}`, { title });
+    });
 
-    // The other side's best reply (and a couple of alternatives), with evals —
-    // scored from the replying side, so flip is relative to the opponent.
+    // The other side's replies after the best move — dim, mirroring the dim reply
+    // arrows; eval flipped to the user's point of view.
     const rep = res.replyLines && res.replyPos ? res.replyLines.filter((l) => l.move) : [];
-    if (rep.length) {
-      const replyCls = userToMove ? 'cc-opp' : 'cc-good';
-      const icon = userToMove ? '⚔' : '★';
-      const label = userToMove ? t('opponentsReply') : t('yourReply');
-      // Reply eval is from the mover-after-best-move's POV; flip it to the user's
-      // side to match the main eval's sign convention (userToMove here is who
-      // moved FIRST, so the replier is the other side → flip when userToMove).
-      const sans = rep.slice(0, state.arrows)
-        .map((l) => `${esc(Explain.sanOf(res.replyPos, l.move))} ${esc(Explain.formatScore(l.score, userToMove))}`);
-      chips += `<span class="cc-chip ${replyCls}" title="${esc(label)}">${icon} ${sans.join(' · ')}</span>`;
-    }
+    const replySide = sideToMove === 'w' ? 'b' : 'w';
+    rep.slice(0, state.arrows).forEach((l, i) => {
+      const evalText = Explain.formatScore(l.score, userToMove);
+      chips += moveChip(rankColor(i), replySide, `${esc(Explain.sanOf(res.replyPos, l.move))} ${esc(evalText)}`,
+        { dim: true, title: userToMove ? t('opponentsReply') : t('yourReply') });
+    });
     return chips;
   }
 

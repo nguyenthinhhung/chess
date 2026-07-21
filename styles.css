@@ -171,11 +171,10 @@
   background: rgba(255, 255, 255, 0.06);
 }
 .cc-chip b { font-weight: 700; }
-.cc-good { color: #b6d36b; background: rgba(118, 153, 0, 0.16); }
+/* Move chips get their colour inline from the arrow palette (see moveChip in
+   chess-coach.js). Only the status and neutral chips are styled by class. */
 .cc-info { color: #7fb2d6; }
-.cc-book { color: #d6bdf2; background: rgba(142, 68, 173, 0.22); }
 .cc-alts { color: #bdbbb7; }
-.cc-opp { color: #e89089; background: rgba(208, 70, 59, 0.16); }
 /* Move-review verdict chips, graded from best (green) to blunder (red). */
 .cc-cls-best, .cc-cls-good { color: #b6d36b; background: rgba(118, 153, 0, 0.16); }
 .cc-cls-inaccuracy { color: #e6c260; background: rgba(224, 160, 0, 0.16); }
