@@ -633,13 +633,15 @@
     }
 
     // Strategy-first: Stockfish's numbers already live in the chips above, so
-    // the AI panel shows only the three fields that add the human plan —
-    // what the best move does, the middlegame plan, and the opponent's intent.
+    // the AI panel shows only the fields that add the human plan — what the best
+    // move does, the middlegame plan, the opponent's intent, and the reusable
+    // principle (the transferable takeaway that makes it a lesson, not commentary).
     const d = explainState.data;
     return `<div class="cc-prow cc-explain-result">
       ${d.whyBest ? `<div class="cc-erow"><b>${esc(t('bestMoveLabel'))}</b> ${esc(d.whyBest)}</div>` : ''}
       ${d.plan ? `<div class="cc-erow"><b>${esc(t('planLabel'))}</b> ${esc(d.plan)}</div>` : ''}
       ${d.opponentReply ? `<div class="cc-erow"><b>${esc(t('replyLabel'))}</b> ${esc(d.opponentReply)}</div>` : ''}
+      ${d.principle ? `<div class="cc-erow"><b>${esc(t('principleLabel'))}</b> ${esc(d.principle)}</div>` : ''}
     </div>`;
   }
 

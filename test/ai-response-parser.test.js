@@ -8,11 +8,12 @@ test('stripCodeFence removes a ```json fence', () => {
 });
 
 test('parseExplainResponse normalizes a well-formed reply', () => {
-  const text = JSON.stringify({ whyBest: 'y', plan: 'p', opponentReply: 'o' });
+  const text = JSON.stringify({ whyBest: 'y', plan: 'p', opponentReply: 'o', principle: 'm' });
   const r = parseExplainResponse(text);
   assert.equal(r.whyBest, 'y');
   assert.equal(r.plan, 'p');
   assert.equal(r.opponentReply, 'o');
+  assert.equal(r.principle, 'm');
 });
 
 test('parseExplainResponse strips a code fence first', () => {

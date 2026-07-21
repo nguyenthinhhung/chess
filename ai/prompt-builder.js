@@ -23,21 +23,23 @@ const LANG_NAMES = { vi: 'Vietnamese' };
 // behind it, and what the opponent is trying to do. Deliberately dropped: the
 // old "assessment" (= the eval chip), "line" (= the PV arrows), and
 // "alternatives" (= the candidate chips) — all duplicated Stockfish output.
-//   whyBest       — what the best move concretely does and the idea behind it
-//                   (or, when reviewing a played move, how it compares to it)
+//   whyBest       — a three-word read of who stands better, then what the best
+//                   move does (or, in review, how the played move compares)
 //   plan          — a concrete middlegame plan for the coached side over the
 //                   next several moves, drawn from standard strategic themes and
 //                   matched to the pawn structure on THIS board
-//   opponentReply — what the opponent is trying to achieve and what the coached
-//                   player should watch for / prepare against
+//   opponentReply — the opponent's best reply (PV move 2) and the idea to watch
+//   principle     — one short transferable maxim the student can reuse; this is
+//                   what turns move commentary into teaching for a ~1200 player
 const EXPLAIN_SCHEMA = {
   type: 'object',
   properties: {
     whyBest: { type: 'string' },
     plan: { type: 'string' },
-    opponentReply: { type: 'string' }
+    opponentReply: { type: 'string' },
+    principle: { type: 'string' }
   },
-  required: ['whyBest', 'plan', 'opponentReply']
+  required: ['whyBest', 'plan', 'opponentReply', 'principle']
 };
 
 function fmtEval(score) {
@@ -61,28 +63,46 @@ function shouldSkipExplain(data) {
 // Bump when the prompt shape changes in a way that makes older cached answers
 // wrong or worse (e.g. the SAN/piece-description grounding added in v2, the
 // coached-side perspective + opponentReply field added in v4, the strategy-first
-// 3-field schema in v5, the computed position-facts block in v6), so stale
-// explanations aren't served from chrome.storage.local after an update.
-const EXPLAIN_CACHE_VERSION = 6;
+// 3-field schema in v5, the computed position-facts block in v6, the
+// PV-anchoring + principle field in v7), so stale explanations aren't served
+// from chrome.storage.local after an update.
+const EXPLAIN_CACHE_VERSION = 7;
 
-// The strategic vocabulary the "plan" field draws from — a menu the model picks
-// from to match THIS position's pawn structure, not a checklist to recite. Kept
-// broad on purpose (the user asked for more than the original six themes) but
-// phrased for a ~1200-Elo student. The model is told to name concrete squares
-// and pieces, and to choose only the ideas the position actually supports.
+// The strategic vocabulary the "plan" field draws from. Each theme carries a
+// `when(facts)` predicate so we offer the model only the ideas THIS position
+// actually supports — no IQP theme when there is no IQP, no king-attack theme
+// before anyone has castled. This is relevance-filtering of the menu (grounding),
+// NOT deciding the plan: the LLM still chooses among the offered themes and does
+// all the strategic reasoning. It also trims tokens and kills "theme soup".
+const _hasWeakPawn = (f) => ['white', 'black'].some((s) =>
+  f.pawns[s].isolated.length || f.pawns[s].doubled.length || f.pawns[s].backward.length);
+const _hasOutpost = (f) => f.outposts.white.length || f.outposts.black.length;
+const _hasOpenFile = (f) => f.openFiles.length || f.halfOpen.white.length || f.halfOpen.black.length;
+const _hasCastled = (f) => (f.kings.white && f.kings.white.side !== 'center') ||
+  (f.kings.black && f.kings.black.side !== 'center');
+const _materialGap = (f) => Math.abs(f.material.white - f.material.black) >= 1;
+
 const STRATEGY_THEMES = [
-  'improve your worst-placed piece (a passive knight or bishop → an active square or an outpost)',
-  'fight for an open or half-open file with a rook, double rooks, or reach the 7th rank',
-  'make a pawn break to open lines for your pieces or fix a target',
-  'attack a structural weakness — an isolated (IQP), backward, doubled, or hanging pawn, or a weak square/hole; attack a pawn chain at its base',
-  'exchange your bad piece for the opponent\'s good one, relieve a cramped position, or simplify into a better endgame',
-  'a wing attack or a minority attack, matched to which side each king castled',
-  'push for or use a space advantage without over-extending, and restrain the opponent (prophylaxis)',
-  'attack the king: open lines toward it, or exploit a weakened castled position',
-  'use the bishop pair, a strong knight outpost, control of a key diagonal, or a good-vs-bad bishop imbalance',
-  'create or blockade a passed pawn; in the endgame, activate the king and use a pawn majority',
-  'the principle of two weaknesses — open a second front so the defender is stretched'
+  { text: 'improve your worst-placed piece (a passive knight or bishop → an active square or an outpost)', when: () => true },
+  { text: 'put a rook on an open or half-open file, or reach the 7th rank', when: _hasOpenFile },
+  { text: 'make a pawn break to open lines for your pieces or fix a target', when: (f) => f.phase !== 'endgame' },
+  { text: 'attack a structural weakness — an isolated (IQP), backward or doubled pawn, or a weak square you can occupy', when: (f) => _hasWeakPawn(f) || _hasOutpost(f) },
+  { text: 'attack the king — a pawn storm or piece attack on the wing it castled to (a minority attack when you have fewer pawns there)', when: _hasCastled },
+  { text: 'trade your bad piece for the opponent\'s good one, or simplify into a better endgame', when: (f) => _materialGap(f) || f.phase === 'endgame' }
 ];
+
+// Pick the themes the Position facts support: keep it a genuine menu (never fewer
+// than 3, so the model still has room to reason) but focused (at most 4). Falls
+// back to the full list when facts are unavailable.
+function selectThemes(facts) {
+  if (!facts) return STRATEGY_THEMES.map((t) => t.text);
+  const picked = STRATEGY_THEMES.filter((t) => t.when(facts)).map((t) => t.text);
+  for (const t of STRATEGY_THEMES) {
+    if (picked.length >= 3) break;
+    if (!picked.includes(t.text)) picked.push(t.text);
+  }
+  return picked.slice(0, 4);
+}
 
 // A cheap, deterministic cache key (not a cryptographic hash) — unique enough
 // to key chrome.storage.local cache entries by position + search depth. Language
@@ -109,7 +129,9 @@ function buildExplainPrompt(data) {
   const topMoves = (data.topMoves || [])
     .map((m, i) => `${i + 1}. ${m.san || m.move} (${fmtEval(m.eval)})`)
     .join('\n');
-  const pv = (data.pvSan && data.pvSan.length ? data.pvSan : data.pv || []).join(' ');
+  const pvArr = (data.pvSan && data.pvSan.length ? data.pvSan : data.pv || []);
+  const pv = pvArr.join(' ');
+  const replySan = pvArr[1] || null; // the opponent's reply = 2nd move of the PV
   // The best move as SAN plus, when available, an explicit board-grounded
   // description of exactly which piece moves where.
   const bestLine = (data.bestSan || data.bestMove) + (data.moveDescription ? ` (${data.moveDescription})` : '');
@@ -119,6 +141,12 @@ function buildExplainPrompt(data) {
     ? data.playedMove + (data.playedDescription ? ` (${data.playedDescription})` : '')
     : null;
   const hasPlayed = !!playedLine;
+
+  // Structural facts computed from the board (material, king safety, files, weak
+  // pawns, outposts) — the grounding the "plan" field leans on, and the basis
+  // for offering only the strategic themes this position actually supports.
+  const facts = _pbFacts ? _pbFacts.describePosition(data.fen) : null;
+  const factsText = facts && facts.lines && facts.lines.length ? facts.lines.join('\n') : null;
 
   const langName = LANG_NAMES[data.lang];
   // Stockfish's raw numbers (eval, candidate moves + scores, the PV) are already
@@ -132,30 +160,26 @@ function buildExplainPrompt(data) {
     data.userSide
       ? `You are coaching the ${sideName(data.userSide)} player — "you" always means that player. When it is the opponent to move, explain what the opponent is trying to do and how the coached player should prepare; never advise the opponent.`
       : null,
-    'The evaluation, the candidate moves with their scores, and the principal variation are ALREADY shown to the player as numbers. Do NOT just restate them. Your job is the human plan behind the position — the ideas the numbers do not spell out.',
+    'The evaluation, the candidate moves with their scores, and the principal variation are ALREADY shown to the player as numbers. Do NOT restate them. Your job is the human plan behind the position — the ideas the numbers do not spell out.',
     'Write for that level: plain sentences, and when you use a chess term (outpost, minority attack, IQP…) add in a few words what it means on THIS board. Name concrete squares and pieces.',
-    'Stay anchored: keep consistent with the evaluation and treat the engine\'s best move as correct; you may explain the pawn structure and plans, but do NOT claim a winning tactic, mating net, or forced win the analysis does not support.',
+    'Stay anchored: keep consistent with the evaluation and treat the engine\'s best move as correct; explain the pawn structure and plans, but do NOT invent a forced tactic, mating net, or winning line the principal variation does not show.',
+    'The principal variation is evidence: the engine\'s own next moves reveal the plan\'s direction and the opponent\'s best reply — do not propose a plan or threat that contradicts it.',
     'The "Side to move" field is ground truth — never say the other color is moving.',
     'Moves are given in SAN; the best move also names exactly which piece moves and what it captures. Use those identities verbatim — never re-derive a piece from the FEN or rename one (e.g. knight vs bishop).',
     'A "Position facts" block, computed directly from the board, gives the material, game phase, where each king castled, the open/half-open files, the weak pawns, and the outpost squares. Treat it as ground truth: build your plan on those facts and do NOT contradict them or re-read the structure from the FEN yourself. If it lists no weakness of some kind, do not claim one.',
-    'Fill the three fields exactly:',
+    'Fill the four fields exactly:',
     hasPlayed
-      ? '"whyBest": in one or two sentences, what the engine\'s best move does and the idea behind it, and how the move actually played compares (better/worse and why); if the played move falls outside the candidate list, say so rather than inventing a number.'
-      : '"whyBest": in one or two sentences, what the best move concretely does (the piece, any capture or check) and the idea behind it — not its number.',
-    '"plan": a concrete plan for the coached side over the next 5–8 moves, chosen to fit the pawn structure. Pick the one or two most relevant of these standard ideas and make them specific to this board (which piece, which file, which break, which square):\n- ' + STRATEGY_THEMES.join('\n- ') + '\nName the plan in terms of this position, not as a generic list. Give the moves as a short idea (e.g. "reroute the knight Nc2–e3–d5") rather than a long forced line.',
+      ? '"whyBest": open with a three-word read of who stands better ("You are winning/better/slightly better", "Roughly equal", "You are worse"), then in one sentence what the engine\'s best move does and how the move actually played compares (better/worse and why); if the played move falls outside the candidate list, say so rather than inventing a number.'
+      : '"whyBest": open with a three-word read of who stands better ("You are winning/better/slightly better", "Roughly equal", "You are worse"), then in one sentence what the best move concretely does (the piece, any capture or check) and the idea behind it.',
+    '"plan": a concrete plan for the coached side over the next 5–8 moves, chosen to fit the Position facts. Pick the one or two most relevant of these ideas (offered because the position supports them) and make them specific to this board (which piece, which file, which break, which square):\n- ' + selectThemes(facts).join('\n- ') + '\nName the plan in terms of this position, not as a generic list. Give the moves as a short idea (e.g. "reroute the knight Nc2–e3–d5") rather than a long forced line.',
     hasPlayed
-      ? '"opponentReply": what the opponent is trying to achieve in return and the one thing the coached player should watch for or prevent.'
-      : '"opponentReply": what the opponent intends after the best move (their own plan or counterplay) and the one thing the coached player should watch for.',
-    'Keep the whole thing under 150 words.',
+      ? '"opponentReply": how the opponent exploits the played move, using ONLY the evaluation gap and the principal variation; if nothing concrete is shown, say the punishment is positional rather than a forced line.'
+      : '"opponentReply": the opponent\'s best reply (the second move of the principal variation) and the one idea behind it the coached player must watch; if the position is quiet, say so rather than inventing counterplay.',
+    '"principle": one short, transferable chess maxim a 1200 player can reuse in other games (e.g. "rooks belong on open files"), tied in a few words to why it applies here.',
+    'Keep all four fields together under ~150 words total.',
     langName ? `Write every text field in ${langName}, including chess terms where a natural translation exists.` : null,
-    'Return JSON only, matching the given schema exactly.'
-  ].filter(Boolean).join(' ');
-
-  // Structural facts computed from the board (material, king safety, files,
-  // weak pawns, outposts) — the grounding the strategic "plan" field leans on
-  // so the model doesn't have to (mis)read them out of the FEN itself.
-  const facts = _pbFacts ? _pbFacts.describePosition(data.fen) : null;
-  const factsText = facts && facts.lines && facts.lines.length ? facts.lines.join('\n') : null;
+    'Output only the JSON object matching the schema — no markdown, no text outside it.'
+  ].filter(Boolean).join('\n');
 
   const user = [
     `Position (FEN): ${data.fen}`,
@@ -166,6 +190,10 @@ function buildExplainPrompt(data) {
     playedLine ? `Move actually played from this position: ${playedLine}` : null,
     `Evaluation: ${fmtEval(data.eval)}`,
     `Principal variation: ${pv}`,
+    // Spell out the opponent's reply (PV move 2) so the model grounds
+    // "opponentReply" on it instead of guessing — weaker models mis-count PV
+    // tokens. Only meaningful live (in review, the played move has its own line).
+    !hasPlayed && (replySan) ? `Opponent's best reply: ${replySan}` : null,
     topMoves ? `Candidate moves (best first):\n${topMoves}` : null
   ].filter(Boolean).join('\n');
 

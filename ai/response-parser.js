@@ -1,5 +1,5 @@
 // ai/response-parser.js — turns Gemini's raw text reply into the validated
-// { whyBest, plan, opponentReply } shape the UI expects, or throws
+// { whyBest, plan, opponentReply, principle } shape the UI expects, or throws
 // AiParseError. Pure: no DOM, no chrome, no network — no markdown parsing
 // beyond stripping an accidental code fence.
 
@@ -35,7 +35,8 @@ function parseExplainResponse(text) {
   return {
     whyBest: str(obj.whyBest),
     plan: str(obj.plan),
-    opponentReply: str(obj.opponentReply)
+    opponentReply: str(obj.opponentReply),
+    principle: str(obj.principle)
   };
 }
 
