@@ -1,8 +1,8 @@
 // Pure ai/* modules (see plan.md) — loaded here, not in offscreen.js, since
 // they call fetch() directly rather than going through the Stockfish worker.
 importScripts(
-  'i18n.js', 'ai/prompt-builder.js', 'ai/response-parser.js', 'ai/providers.js',
-  'ai/gemini-service.js', 'ai/openai-compatible-service.js', 'ai/ai-service.js'
+  'i18n.js', 'ai/position-facts.js', 'ai/prompt-builder.js', 'ai/response-parser.js',
+  'ai/providers.js', 'ai/gemini-service.js', 'ai/openai-compatible-service.js', 'ai/ai-service.js'
 );
 const ChessAiPrompt = globalThis.ChessAiPrompt;
 const ChessAiProviders = globalThis.ChessAiProviders;

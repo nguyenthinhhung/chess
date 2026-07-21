@@ -81,6 +81,19 @@ test('buildExplainPrompt prefers SAN + piece description over raw UCI', () => {
   assert.match(system, /re-derive a piece from the FEN/i);
 });
 
+test('buildExplainPrompt injects a computed Position facts block and points the model at it', () => {
+  const { system, user } = buildExplainPrompt({
+    fen: 'r1bqkb1r/pp3ppp/2n1pn2/8/3P4/2N2N2/PP3PPP/R1BQKB1R w KQkq - 0 1',
+    bestMove: 'd4d5', bestSan: 'd5',
+    eval: { type: 'cp', value: 35 }, depth: 16, pv: ['d4d5'], pvSan: ['d5'],
+    topMoves: [{ move: 'd4d5', san: 'd5', eval: { type: 'cp', value: 35 } }]
+  });
+  assert.match(user, /Position facts \(computed from the board/);
+  assert.match(user, /isolated pawn\(s\) on d4/);   // the IQP is spelled out for the model
+  assert.match(user, /Open files: c/);
+  assert.match(system, /"Position facts" block/);    // and the model is told to trust it
+});
+
 test('EXPLAIN_SCHEMA requires the opponentReply field', () => {
   assert.ok(EXPLAIN_SCHEMA.properties.opponentReply);
   assert.ok(EXPLAIN_SCHEMA.required.includes('opponentReply'));

@@ -11,6 +11,7 @@
 
 const _pbIsNode = typeof module !== 'undefined' && module.exports;
 const _pbI18n = _pbIsNode ? require('../i18n.js') : globalThis.ChessI18n;
+const _pbFacts = _pbIsNode ? require('./position-facts.js') : globalThis.ChessPositionFacts;
 
 const LANG_NAMES = { vi: 'Vietnamese' };
 
@@ -60,9 +61,9 @@ function shouldSkipExplain(data) {
 // Bump when the prompt shape changes in a way that makes older cached answers
 // wrong or worse (e.g. the SAN/piece-description grounding added in v2, the
 // coached-side perspective + opponentReply field added in v4, the strategy-first
-// 3-field schema in v5), so stale explanations aren't served from
-// chrome.storage.local after an update.
-const EXPLAIN_CACHE_VERSION = 5;
+// 3-field schema in v5, the computed position-facts block in v6), so stale
+// explanations aren't served from chrome.storage.local after an update.
+const EXPLAIN_CACHE_VERSION = 6;
 
 // The strategic vocabulary the "plan" field draws from — a menu the model picks
 // from to match THIS position's pawn structure, not a checklist to recite. Kept
@@ -136,6 +137,7 @@ function buildExplainPrompt(data) {
     'Stay anchored: keep consistent with the evaluation and treat the engine\'s best move as correct; you may explain the pawn structure and plans, but do NOT claim a winning tactic, mating net, or forced win the analysis does not support.',
     'The "Side to move" field is ground truth — never say the other color is moving.',
     'Moves are given in SAN; the best move also names exactly which piece moves and what it captures. Use those identities verbatim — never re-derive a piece from the FEN or rename one (e.g. knight vs bishop).',
+    'A "Position facts" block, computed directly from the board, gives the material, game phase, where each king castled, the open/half-open files, the weak pawns, and the outpost squares. Treat it as ground truth: build your plan on those facts and do NOT contradict them or re-read the structure from the FEN yourself. If it lists no weakness of some kind, do not claim one.',
     'Fill the three fields exactly:',
     hasPlayed
       ? '"whyBest": in one or two sentences, what the engine\'s best move does and the idea behind it, and how the move actually played compares (better/worse and why); if the played move falls outside the candidate list, say so rather than inventing a number.'
@@ -149,10 +151,17 @@ function buildExplainPrompt(data) {
     'Return JSON only, matching the given schema exactly.'
   ].filter(Boolean).join(' ');
 
+  // Structural facts computed from the board (material, king safety, files,
+  // weak pawns, outposts) — the grounding the strategic "plan" field leans on
+  // so the model doesn't have to (mis)read them out of the FEN itself.
+  const facts = _pbFacts ? _pbFacts.describePosition(data.fen) : null;
+  const factsText = facts && facts.lines && facts.lines.length ? facts.lines.join('\n') : null;
+
   const user = [
     `Position (FEN): ${data.fen}`,
     `Side to move: ${sideToMoveName(data.fen)}`,
     data.userSide ? `Coached player: ${sideName(data.userSide)}` : null,
+    factsText ? `Position facts (computed from the board — ground truth):\n${factsText}` : null,
     `Best move: ${bestLine}`,
     playedLine ? `Move actually played from this position: ${playedLine}` : null,
     `Evaluation: ${fmtEval(data.eval)}`,
