@@ -17,7 +17,10 @@ const vm = require('node:vm');
 // The DOM-free subset of manifest.json's content_scripts js list, in load
 // order. content.js and chess-coach.js are omitted only because they touch
 // document/chrome at top level; every file that defines shared globals is here.
-const SCRIPTS = ['pgn.js', 'chesscore.js', 'i18n.js', 'explain.js', 'ply-view.js', 'ai/prompt-builder.js'];
+// Keep this in the SAME order as manifest.json — a missing or reordered entry
+// is exactly how the fileOf/rankOf/isWhitePiece collision between chesscore.js
+// and ai/position-facts.js slipped past this guard undetected.
+const SCRIPTS = ['pgn.js', 'chesscore.js', 'i18n.js', 'explain.js', 'ply-view.js', 'ai/position-facts.js', 'ai/prompt-builder.js'];
 
 test('content scripts evaluate in one shared global scope without collisions', () => {
   const sandbox = {};
@@ -33,7 +36,7 @@ test('content scripts evaluate in one shared global scope without collisions', (
   // The globals chess-coach.js reads at startup — it disables itself if any
   // are missing, which shows up in the UI as a silently dead coach.
   for (const name of ['createPosition', 'applySan', 'applyUci', 'toFen', 'fromFen',
-    'sliceToViewedPly', 'ChessExplain', 'ChessI18n', 'ChessAiPrompt']) {
+    'sliceToViewedPly', 'ChessExplain', 'ChessI18n', 'ChessAiPrompt', 'ChessPositionFacts']) {
     assert.ok(sandbox[name], `global "${name}" missing after loading content scripts`);
   }
   // Spot-check the delegated re-exports survived the shared scope.

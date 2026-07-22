@@ -34,10 +34,15 @@ function parseBoard(fen) {
   return board;
 }
 
-const fileOf = (i) => i % 8;
-const rankOf = (i) => ((i / 8) | 0) + 1;
+// Prefixed (_pf-) because every content script here shares one global scope
+// (see test/content-script-world.test.js) — chesscore.js already declares
+// globals named fileOf/rankOf/isWhitePiece, and this module is deliberately
+// self-contained rather than reusing them (chesscore's rankOf is 0-based;
+// this one is 1-based to match sq()'s square-name output directly).
+const _pfFileOf = (i) => i % 8;
+const _pfRankOf = (i) => ((i / 8) | 0) + 1;
 const sq = (file, rank) => FILE_CH[file] + rank;
-const isWhitePiece = (p) => p >= 'A' && p <= 'Z';
+const _pfIsWhitePiece = (p) => p >= 'A' && p <= 'Z';
 
 // Split the board into the two sides' piece lists ({ char, file, rank }).
 function collect(board) {
@@ -45,7 +50,7 @@ function collect(board) {
   for (let i = 0; i < 64; i++) {
     const p = board[i];
     if (p === '.') continue;
-    (isWhitePiece(p) ? white : black).push({ ch: p.toLowerCase(), file: fileOf(i), rank: rankOf(i) });
+    (_pfIsWhitePiece(p) ? white : black).push({ ch: p.toLowerCase(), file: _pfFileOf(i), rank: _pfRankOf(i) });
   }
   return { white, black };
 }
