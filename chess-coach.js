@@ -61,6 +61,22 @@
   // is capped here regardless of the user's depth setting.
   const REPLY_DEPTH = 10;
 
+  // Neutral Hint mode: one flat colour for every equivalent candidate — no
+  // rank implied. Threshold is in centipawns (0.10-0.30 pawns per the spec).
+  const NEUTRAL_COLOR = '#8a8a86';
+  const NEUTRAL_THRESHOLD_MIN = 10, NEUTRAL_THRESHOLD_MAX = 30, NEUTRAL_THRESHOLD_DEFAULT = 20;
+
+  // Hint interval: fixed numeric steps the picker offers, and the ladder
+  // Adaptive mode's recommendation climbs (never past the largest step).
+  const ADAPTIVE_STEPS = ['2', '3', '5', '10'];
+  // Adaptive recommendation heuristic (session-scoped, deliberately simple —
+  // see design discussion: a rolling window, a good-move ratio, a manual-hint
+  // ceiling; no persistence, no ML).
+  const HINT_LOG_MAX = 50;
+  const HINT_LOG_MIN_WINDOW = 30;
+  const HINT_GOOD_RATIO = 0.8;
+  const HINT_MAX_MANUAL_RATIO = 0.1;
+
   // Openings offered in the picker, tagged by the side that chooses them, so the
   // dropdown can show only the openings relevant to the side you're playing.
   // Resolved to their canonical (shortest) UCI line from openings.json on load.
@@ -98,9 +114,18 @@
   // POV) is flipped to get there. Returns '' when empty.
   function sideLine(side, list, pos, opts = {}) {
     if (!list || !list.length || !pos) return '';
-    const items = list.slice(0, state.arrows).filter((l) => l.move)
-      .map((l, i) => moveItem(rankColor(i), Explain.sanOf(pos, l.move), Explain.formatScore(l.score, side === 'b')))
-      .join('');
+    // A candidate that's also the opening-book move gets the book colour
+    // instead of its usual rank/neutral one — kept IN the list (not deduped
+    // away) so opening practice still shows it sitting among the engine's
+    // equally-good options, just recognisable as the book choice.
+    const colorFor = (move, fallback) => (opts.bookMove && move === opts.bookMove) ? BOOK_COLOR : fallback;
+    // Neutral Hint mode: the pre-filtered equivalent-candidate set, one flat
+    // colour, no eval — deliberately doesn't reveal rank or the engine's pick.
+    const items = opts.neutral
+      ? opts.neutral.map((l) => moveItem(colorFor(l.move, NEUTRAL_COLOR), Explain.sanOf(pos, l.move), '')).join('')
+      : list.slice(0, state.arrows).filter((l) => l.move)
+          .map((l, i) => moveItem(colorFor(l.move, rankColor(i)), Explain.sanOf(pos, l.move), Explain.formatScore(l.score, side === 'b')))
+          .join('');
     if (!items) return '';
     const tag = `<span class="cc-side-tag" title="${esc(side === 'w' ? t('sideWhite') : t('sideBlack'))}"><i class="cc-dot cc-dot-${side}"></i></span>`;
     return `<div class="cc-side-line${opts.dim ? ' cc-dim' : ''}">${tag}${items}</div>`;
@@ -113,8 +138,22 @@
   ];
 
   // enabled: the lightbulb toggle. depth: Stockfish search depth. openingId: a
-  // POPULAR name to train, or null = auto-detect.
-  const state = { enabled: true, depth: 14, openingId: null, panelMin: false, arrows: 3, lang: 'en' };
+  // POPULAR name to train, or null = auto-detect. hintInterval: '1'|'2'|'3'|'5'|
+  // '10'|'manual'|'adaptive' — gates automatic suggestions only (Show Hint always
+  // works). adaptiveBase: the numeric interval Adaptive mode is currently using.
+  // suggestionStyle: 'best' shows the ranked top move; 'neutral' shows the set of
+  // engine-equivalent candidates instead. neutralThreshold: centipawns.
+  const state = {
+    enabled: true, depth: 14, openingId: null, panelMin: false, arrows: 3, lang: 'en',
+    hintInterval: '1', adaptiveBase: '2', suggestionStyle: 'best',
+    neutralThreshold: NEUTRAL_THRESHOLD_DEFAULT,
+    settingsOpen: false, // advanced settings (depth/arrows/threshold) collapsed by default
+    // displayLevel: 'full' (arrows+eval+notation, today's behaviour), 'hint'
+    // (a dot on the square of the piece to move — no path/eval/notation), or
+    // 'hidden' (Stockfish doesn't run at all while it's your move). Only ever
+    // restricts YOUR OWN pending decision — unaffected when it's not your turn.
+    displayLevel: 'full'
+  };
   let lastSig = '';
   let lastArrowSig = '';
 
@@ -142,6 +181,17 @@
   let engineFailures = 0;
   let engineDead = false;
 
+  // Hint interval: FENs where "Show Hint" was clicked before the move was made
+  // there — consumed (and removed) once that move is graded, see
+  // recordHintOutcome. Manual "Show Hint" always works regardless of interval.
+  const manualHintFens = new Set();
+  // Rolling window of the user's last ~50 graded moves, for the Adaptive
+  // recommendation heuristic only. Session-scoped (resets on reload/navigation)
+  // and never persisted — this is a lightweight heuristic, not a stats engine.
+  let hintLog = []; // [{ good, manual }]
+  let hintLogRecommendedAt = 0; // hintLog.length at the last shown/dismissed recommendation
+  const adaptiveRec = { active: false, from: null, to: null };
+
   const alive = () => { try { return !!chrome?.runtime?.id; } catch { return false; } };
   const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 
@@ -158,6 +208,108 @@
     const all = bridgeSans || [];
     const viewed = sliceToViewedPly ? sliceToViewedPly(all, bridgePlyViewed) : all;
     return viewed.length >= all.length;
+  }
+
+  // ---- hint interval (Feature 1) ---------------------------------------------
+  // How many of `uci`'s plies were played by `side` — how many decisions that
+  // side has already made in this line, used to place the NEXT one on the
+  // interval ladder.
+  function countSideMoves(uci, side) {
+    let n = 0;
+    for (let i = 0; i < uci.length; i++) if ((i % 2 === 0 ? 'w' : 'b') === side) n++;
+    return n;
+  }
+
+  function currentIntervalN() {
+    if (state.hintInterval === 'manual') return Infinity;
+    if (state.hintInterval === 'adaptive') return Number(state.adaptiveBase) || 2;
+    return Number(state.hintInterval) || 1;
+  }
+
+  // Whether an automatic hint is due for the decision the user is about to make
+  // (after `already` decisions of theirs so far). The very first decision always
+  // gets a hint; after that, one in every N — Manual only never auto-shows.
+  function hintDue(already) {
+    const n = currentIntervalN();
+    return isFinite(n) && already % n === 0;
+  }
+
+  function nextAdaptiveStep(cur) {
+    const i = ADAPTIVE_STEPS.indexOf(String(cur));
+    return i >= 0 && i < ADAPTIVE_STEPS.length - 1 ? ADAPTIVE_STEPS[i + 1] : null;
+  }
+
+  function intervalLabel(n) {
+    return n === '1' ? t('intervalEveryMove') : t('intervalEveryN', n);
+  }
+
+  // Whether the current position's forward-looking suggestions (arrows, panel
+  // candidates, Explain button) should be visible. Only ever hides something
+  // when it is the USER's own pending decision — book arrows and the after-the-
+  // fact grading of moves already played are unaffected (see render()/resultsHtml).
+  function computeHintVisible(view) {
+    const userSide = mapSide(bridgePlayingAs) || detectUserSide() || 'w';
+    if (view.pos.turn !== userSide) return true;
+    const already = countSideMoves(view.uci, userSide);
+    return hintDue(already) || manualHintFens.has(view.fen);
+  }
+
+  // Display level "Hidden": while it's the user's own move, Stockfish does not
+  // run at all (no background search, no arrows/dots, no CPU/battery spent) —
+  // unless this exact position was manually revealed (Show Hint or Explain),
+  // in which case a one-shot lazy search is allowed through. Grading after the
+  // move is unaffected: it happens once it's the OPPONENT's turn, outside this
+  // check's scope entirely.
+  function shouldSkipEngine(view) {
+    if (state.displayLevel !== 'hidden') return false;
+    const userSide = mapSide(bridgePlayingAs) || detectUserSide() || 'w';
+    if (view.pos.turn !== userSide) return false;
+    return !manualHintFens.has(view.fen);
+  }
+
+  // Whether a reveal that's already happening (due, or manually shown) should
+  // render at the reduced "Hint" level of detail (a dot, no path/eval/notation)
+  // rather than "Full". True for display level 'hint', and ALSO for 'hidden'
+  // once manually revealed — Show Hint in Hidden mode surfaces one lazy search
+  // at Hint-level detail, not a jump straight to Full (confirmed design).
+  function isHintLevelDisplay(view) {
+    if (state.displayLevel === 'hint') return true;
+    return state.displayLevel === 'hidden' && manualHintFens.has(view.fen);
+  }
+
+  // Called once per graded user move (see runEngine's review branch). Feeds the
+  // Adaptive heuristic; never changes any setting itself — only ever proposes.
+  function recordHintOutcome(classifyKey, parentFen) {
+    const manual = manualHintFens.has(parentFen);
+    manualHintFens.delete(parentFen);
+    hintLog.push({ good: classifyKey === 'best' || classifyKey === 'good', manual });
+    if (hintLog.length > HINT_LOG_MAX) hintLog.shift();
+    maybeRecommendAdaptive();
+  }
+
+  function maybeRecommendAdaptive() {
+    if (state.hintInterval !== 'adaptive' || adaptiveRec.active) return;
+    if (hintLog.length < HINT_LOG_MIN_WINDOW) return;
+    if (hintLog.length - hintLogRecommendedAt < HINT_LOG_MIN_WINDOW) return; // cooldown after a decision
+    const goodRatio = hintLog.filter((h) => h.good).length / hintLog.length;
+    const manualRatio = hintLog.filter((h) => h.manual).length / hintLog.length;
+    if (goodRatio < HINT_GOOD_RATIO || manualRatio > HINT_MAX_MANUAL_RATIO) return;
+    const next = nextAdaptiveStep(state.adaptiveBase);
+    if (!next) return;
+    adaptiveRec.active = true;
+    adaptiveRec.from = state.adaptiveBase;
+    adaptiveRec.to = next;
+  }
+
+  // Candidate lines within `thresholdCp` of the best (already-fetched MultiPV —
+  // no extra search). Returns null (→ caller falls back to ranked Best-move
+  // display) when fewer than two candidates qualify, per the spec.
+  function neutralFilter(lines, thresholdCp) {
+    const list = (lines || []).filter((l) => l.move && l.score);
+    if (list.length < 2) return null;
+    const bestCp = Explain.scoreToCp(list[0].score);
+    const within = list.filter((l) => bestCp - Explain.scoreToCp(l.score) <= thresholdCp);
+    return within.length >= 2 ? within : null;
   }
 
   window.addEventListener('message', (e) => {
@@ -386,6 +538,7 @@
 
   function maybeAnalyze(view) {
     if (engineDead || !engineAvailable() || !Explain) return;
+    if (shouldSkipEngine(view)) return; // Display level "Hidden": no background search on your move
     const sig = curSig(view);
     // Already running, done, OR errored for this exact position+depth — leave it
     // be. Critically, a failed search must NOT be retried for the same position:
@@ -437,7 +590,8 @@
           for (const u of view.uci.slice(0, -1)) if (!applyUci(parentPos, u)) { ok = false; break; }
           const playedUci = view.uci[view.uci.length - 1];
           if (ok) {
-            const pr = await engineGo(toFen(parentPos), { depth: state.depth, multipv: 1 });
+            const parentFen = toFen(parentPos);
+            const pr = await engineGo(parentFen, { depth: state.depth, multipv: 1 });
             if (engineState.sig !== sig) return;
             const pBest = pr.lines && pr.lines[0];
             if (pBest && pBest.move && pr.score && r.score) {
@@ -446,12 +600,16 @@
               const cpLoss = eBest - ePlayed;
               const replyUci = best && best.move ? best.move : null; // opponent's punishing reply
               const verdict = Explain.explainPlayed(parentPos, playedUci, pBest.move, cpLoss, replyUci, state.lang);
+              // Deterministic (no LLM, no extra search) reason the engine likes its
+              // own top move — Neutral Hint reveals this only after the move is made.
+              const bestWhy = Explain.explainBest(parentPos, pBest.move, pr.score, null, state.lang);
               engineState.result.review = {
                 ...verdict, // { key, label, text }
                 playedUci, playedSan: Explain.sanOf(parentPos, playedUci),
                 bestUci: pBest.move, bestSan: Explain.sanOf(parentPos, pBest.move),
-                bestScore: pr.score
+                bestScore: pr.score, bestWhy
               };
+              recordHintOutcome(verdict.key, parentFen);
               lastSig = '';
               render(detectContext());
             }
@@ -610,7 +768,21 @@
   function explainHtml(view) {
     if (!AiPrompt) return '';
     const haveEngine = engineState.status === 'done' && engineState.sig === curSig(view) && engineState.result;
-    if (!haveEngine) return '';
+    if (!haveEngine) {
+      // Display level "Hidden": no background result exists by design — Explain
+      // still always works (like Show Hint), it just runs its own lazy one-shot
+      // search first (see bindPanel's click handler). Full/Hint modes just wait
+      // for the continuous search already in flight — no reason to duplicate it.
+      const userSide = mapSide(bridgePlayingAs) || detectUserSide() || 'w';
+      const userToMove = view.pos.turn === userSide;
+      if (userToMove && state.displayLevel === 'hidden') {
+        return `<div class="cc-prow cc-explain"><button class="cc-explain-btn" data-act="explain">${esc(t('explainThisMove'))}</button></div>`;
+      }
+      return '';
+    }
+    // Explain is manual/on-demand by nature (never automatic — see requestExplain)
+    // so, like Show Hint, it always works once a result exists, independent of
+    // Hint Interval's due/manual gate.
 
     const data = buildExplainInput(engineState.result);
     const skip = AiPrompt.shouldSkipExplain(data);
@@ -657,8 +829,9 @@
 
   // Render-ready arrows. Each carries a resolved colour (by side + rank) so the
   // drawer stays dumb. z-order: book first, then candidates, reply last.
-  //   { uci, color, dim? }
-  function computeArrows(view, haveEngine) {
+  //   { uci, color, dim? } for a path, or { square, color, dot: true } for a
+  // Display-level "Hint" marker (see below) — drawArrows renders both.
+  function computeArrows(view, haveEngine, hintVisible) {
     const arrows = [];
     // Book hints need the move sequence; when the view fell back to the raw
     // board FEN (synced=false) the move list is exactly what proved unreliable.
@@ -666,26 +839,74 @@
     const bm = view.synced ? bookMove(view.uci, opening) : null;
     if (bm) arrows.push({ uci: bm, color: BOOK_COLOR });
 
-    if (haveEngine) {
+    // Hint interval: while it's the user's own move and no hint is due/revealed,
+    // hintVisible is false and every engine-derived arrow (including the
+    // opponent's hypothetical replies) stays hidden — only the book arrow shows.
+    // (Display level "Hidden" reaches the same result differently: haveEngine
+    // is false because the search never ran — see shouldSkipEngine.)
+    if (haveEngine && hintVisible) {
       const res = engineState.result;
       const rank = (i) => RANK_COLORS[Math.min(i, RANK_COLORS.length - 1)];
-      // Candidate moves for whoever is to move (solid). A shown book arrow takes
-      // one of the configured slots, so we draw one fewer engine move to keep the
-      // total at `state.arrows`.
       const budget = state.arrows - (bm ? 1 : 0);
-      let n = 0;
-      for (const ln of res.lines) {
-        if (n >= budget) break;
-        if (!ln.move || (bm && ln.move === bm)) continue;
-        arrows.push({ uci: ln.move, color: rank(n) });
-        n++;
+      const neutral = state.suggestionStyle === 'neutral' ? neutralFilter(res.lines, state.neutralThreshold) : null;
+      // Display level's rendering choice (dot vs arrow) applies uniformly no
+      // matter whose turn is shown — only whether the engine RUNS AT ALL is
+      // scoped to your own move (shouldSkipEngine); otherwise switching turns
+      // while browsing would flip between dots and arrows, which is confusing.
+      const displayHint = isHintLevelDisplay(view);
+
+      if (displayHint) {
+        // Display level "Hint": no path, no eval, no notation — just a dot on
+        // the square of the piece to move, for every qualifying candidate.
+        // Colour follows Suggestion Style *as chosen*, not whether the
+        // threshold fallback happened to kick in: Neutral always stays one
+        // flat colour, even on a position where fewer than 2 candidates
+        // qualified (the fallback pool is just the single best move then) —
+        // switching to rank colours there would silently leak "this position
+        // has a uniquely-best move", which Gợi ý is supposed to withhold.
+        // Best-move keeps the rank colours, same candidates Full mode would
+        // arrow. A square shared by two candidates keeps the better one's
+        // colour (we fill best-first).
+        const squares = new Map();
+        if (state.suggestionStyle === 'neutral') {
+          const candidates = neutral || res.lines.slice(0, 1);
+          candidates.filter((ln) => ln.move && !(bm && ln.move === bm)).slice(0, Math.max(0, budget))
+            .forEach((ln) => { const s = ln.move.slice(0, 2); if (!squares.has(s)) squares.set(s, NEUTRAL_COLOR); });
+        } else {
+          let n = 0;
+          for (const ln of res.lines) {
+            if (n >= budget) break;
+            if (!ln.move || (bm && ln.move === bm)) continue;
+            const s = ln.move.slice(0, 2);
+            if (!squares.has(s)) squares.set(s, rank(n));
+            n++;
+          }
+        }
+        squares.forEach((color, s) => arrows.push({ square: s, color, dot: true }));
+      } else if (neutral) {
+        // Neutral Hint: every equivalent candidate, one flat colour — no rank.
+        neutral.filter((ln) => !(bm && ln.move === bm)).slice(0, Math.max(0, budget))
+          .forEach((ln) => arrows.push({ uci: ln.move, color: NEUTRAL_COLOR }));
+      } else {
+        // Best-move (or Neutral fell back — fewer than 2 equivalent candidates).
+        let n = 0;
+        for (const ln of res.lines) {
+          if (n >= budget) break;
+          if (!ln.move || (bm && ln.move === bm)) continue;
+          arrows.push({ uci: ln.move, color: rank(n) });
+          n++;
+        }
       }
       // The other side's top replies after the best move (dimmer, since they are
-      // one ply hypothetical). Same rank palette — the board shows whose move it is.
-      (res.replyLines || []).slice(0, state.arrows).forEach((ln, i) => {
-        if (!ln.move) return;
-        arrows.push({ uci: ln.move, color: rank(i), dim: true });
-      });
+      // one ply hypothetical). Display level "Hint" suppresses these too when
+      // it's your own move — it's meant to be the minimal marker, not a second
+      // hidden layer of arrows.
+      if (!displayHint) {
+        (res.replyLines || []).slice(0, state.arrows).forEach((ln, i) => {
+          if (!ln.move) return;
+          arrows.push({ uci: ln.move, color: rank(i), dim: true });
+        });
+      }
     }
     return arrows;
   }
@@ -734,14 +955,37 @@
 
     let shapes = '';
     for (const a of list) {
+      if (a.dot) {
+        // Display level "Hint": a plain marker on one square, no path — the
+        // square of the piece to move, not where to move it. Nudged to the
+        // square's top-right corner (dead centre sits right under the piece)
+        // and given a white ring so it stays visible on any square/piece colour.
+        const f = a.square.charCodeAt(0) - 97, r = +a.square[1];
+        if (f < 0 || f > 7 || !(r >= 1 && r <= 8)) continue;
+        const C = squareCentre(f, r, flipped);
+        const cx = C.x + 0.27, cy = C.y - 0.27;
+        shapes += `<circle cx="${cx.toFixed(3)}" cy="${cy.toFixed(3)}" r="0.11" fill="${a.color}" ` +
+          `stroke="#fff" stroke-width="0.025"></circle>`;
+        continue;
+      }
       const ff = a.uci.charCodeAt(0) - 97, fr = +a.uci[1];
       const tf = a.uci.charCodeAt(2) - 97, tr = +a.uci[3];
       if (ff < 0 || ff > 7 || tf < 0 || tf > 7 || !(fr >= 1 && fr <= 8) || !(tr >= 1 && tr <= 8)) continue;
       const A = squareCentre(ff, fr, flipped), B = squareCentre(tf, tr, flipped);
       const poly = arrowPolygon(A, B);
       const op = a.dim ? 0.38 : 0.62;
-      shapes += `<polygon points="${poly}" fill="${a.color}" stroke="${a.color}" ` +
-        `stroke-width="0.02" stroke-linejoin="round" opacity="${op}"></polygon>`;
+      // Neutral Hint arrows all share one flat colour, so a shorter one lying
+      // exactly inside a longer, same-coloured one (e.g. e3 inside e2-e4)
+      // would otherwise be invisible — a brighter white outline keeps its
+      // silhouette visible even fully overlapped (its head is wider than the
+      // longer arrow's shaft, so the outline still pokes out on both sides).
+      // Rank/book colours differ arrow-to-arrow already, so they keep their
+      // own-colour outline at the same opacity as before.
+      const neutralArrow = a.color === NEUTRAL_COLOR;
+      const outline = neutralArrow ? '#fff' : a.color;
+      const outlineOp = neutralArrow ? Math.min(1, op + 0.3) : op;
+      shapes += `<polygon points="${poly}" fill="${a.color}" fill-opacity="${op}" ` +
+        `stroke="${outline}" stroke-opacity="${outlineOp}" stroke-width="0.02" stroke-linejoin="round"></polygon>`;
     }
     svg.innerHTML = shapes;
   }
@@ -806,9 +1050,10 @@
   }
 
   // Compact, inline result chips for the single-line layout.
-  function resultsHtml(view) {
+  function resultsHtml(view, hintVisible) {
     const sideToMove = view.pos.turn;
     const userSide = mapSide(bridgePlayingAs) || detectUserSide() || 'w';
+    const userToMove = sideToMove === userSide;
     let chips = '';
 
     const opening = view.synced ? detectOpening(view.uci) : null;
@@ -825,6 +1070,16 @@
       return chips + `<span class="cc-chip cc-info">${esc(t('stockfishUnavailable'))}</span>`;
     }
 
+    // Display level "Hidden": Stockfish never ran for this position (see
+    // shouldSkipEngine) — say so plainly instead of a misleading "Analysing…",
+    // and offer both manual escape hatches (Show Hint / Explain, see below).
+    if (userToMove && state.displayLevel === 'hidden' && !manualHintFens.has(view.fen)) {
+      return chips + `<div class="cc-hint-hidden">
+        <span class="cc-chip cc-info">${esc(t('engineHiddenMsg'))}</span>
+        <button class="cc-explain-btn" data-act="showhint">${esc(t('showHint'))}</button>
+      </div>`;
+    }
+
     const haveEngine = engineState.status === 'done' && engineState.sig === curSig(view) && engineState.result;
     if (!haveEngine) {
       const msg = engineState.status === 'error' ? t('engineError') : t('analysingDepth', state.depth);
@@ -832,10 +1087,22 @@
     }
 
     const res = engineState.result;
-    const userToMove = sideToMove === userSide;
+
+    // Hint interval: it's the user's own move to make and no hint is due or
+    // manually revealed yet — hide every engine-derived suggestion (book arrow
+    // above is unaffected) behind a "Show Hint" button.
+    if (userToMove && !hintVisible) {
+      return chips + `<div class="cc-hint-hidden">
+        <span class="cc-chip cc-info">${esc(t('thinkItThrough'))}</span>
+        <button class="cc-explain-btn" data-act="showhint">${esc(t('showHint'))}</button>
+      </div>`;
+    }
 
     // Opponent to move at the live head → the user just moved. Grade that move
-    // instead of showing the opponent's best as if coaching them.
+    // instead of showing the opponent's best as if coaching them. Checked
+    // BEFORE the display-level short-circuit below: grading is retrospective
+    // feedback, not a forward hint, so it always shows in full regardless of
+    // Suggestion display level.
     if (!userToMove && view.synced && view.uci.length >= 1 && atLiveHead()) {
       if (!res.review) {
         return chips + `<span class="cc-chip cc-info">${esc(t('reviewingYourMove'))}</span>`;
@@ -843,15 +1110,36 @@
       const rv = res.review;
       // Verdict + the move you should have played, on one line. The verdict keeps
       // its own quality colour (green → red) since a played move has no arrow.
+      // Best-move mode only — Neutral mode reveals the engine's pick below instead,
+      // unconditionally, since it was deliberately withheld before the move.
       let vline = `<div class="cc-side-line"><span class="cc-chip cc-cls-${rv.key}" title="${esc(rv.text || '')}">${esc(rv.label)} — <b>${esc(rv.playedSan)}</b></span>`;
-      if (rv.bestUci && rv.bestUci !== rv.playedUci) {
+      if (state.suggestionStyle !== 'neutral' && rv.bestUci && rv.bestUci !== rv.playedUci) {
         const evalText = Explain.formatScore(rv.bestScore, userSide === 'b'); // to White's POV, like the lines
         vline += `<span class="cc-chip cc-alts">${esc(t('shouldHavePlayed'))} <b>${esc(rv.bestSan)}</b> ${esc(evalText)}</span>`;
       }
       chips += vline + '</div>';
-      // The opponent's candidate replies, on their own W/B line (they have arrows).
-      chips += sideLine(sideToMove, res.lines, res.pos, {});
+      if (state.suggestionStyle === 'neutral' && rv.bestSan) {
+        chips += `<div class="cc-erow"><b>${esc(t('enginePreferredLabel'))}</b> ${esc(rv.bestSan)}${rv.bestWhy ? ' — ' + esc(rv.bestWhy) : ''}</div>`;
+      }
+      // The opponent's candidate replies — Display level applies here too, same
+      // as the forward view below, so the board's dots and this text agree.
+      if (isHintLevelDisplay(view)) {
+        chips += `<div class="cc-erow">${esc(t('hintDotMsg'))}</div>`;
+      } else {
+        const neutralAfter = state.suggestionStyle === 'neutral' ? neutralFilter(res.lines, state.neutralThreshold) : null;
+        const afterOpts = {};
+        if (neutralAfter) afterOpts.neutral = neutralAfter;
+        if (bm) afterOpts.bookMove = bm;
+        chips += sideLine(sideToMove, res.lines, res.pos, afterOpts);
+      }
       return chips;
+    }
+
+    // Display level "Hint" (or "Hidden" manually revealed): applies uniformly
+    // regardless of whose turn is shown (see computeArrows) — the board shows
+    // a dot on the square to move; no move text, eval, or notation here.
+    if (isHintLevelDisplay(view)) {
+      return chips + `<div class="cc-erow">${esc(t('hintDotMsg'))}</div>`;
     }
 
     // Forward view: one line per side, White on top. The side to move gets its
@@ -861,8 +1149,17 @@
     const other = { list: res.replyLines, pos: res.replyPos };
     const white = sideToMove === 'w' ? mine : other;
     const black = sideToMove === 'w' ? other : mine;
-    chips += sideLine('w', white.list, white.pos, { dim: sideToMove !== 'w' });
-    chips += sideLine('b', black.list, black.pos, { dim: sideToMove !== 'b' });
+    const whiteOpts = { dim: sideToMove !== 'w' };
+    const blackOpts = { dim: sideToMove !== 'b' };
+    // Neutral Hint, and the book-move colour, apply only to whoever is actually
+    // to move here (the "mine" side) — the other side's line is a hypothetical
+    // future reply, unaffected.
+    const mineOpts = sideToMove === 'w' ? whiteOpts : blackOpts;
+    const neutralMine = state.suggestionStyle === 'neutral' ? neutralFilter(res.lines, state.neutralThreshold) : null;
+    if (neutralMine) mineOpts.neutral = neutralMine;
+    if (bm) mineOpts.bookMove = bm;
+    chips += sideLine('w', white.list, white.pos, whiteOpts);
+    chips += sideLine('b', black.list, black.pos, blackOpts);
     return chips;
   }
 
@@ -880,13 +1177,20 @@
   }
 
   // Bottom-right of the screen: settings + results, with a minimize/expand button.
-  function buildPanel(ctx, view) {
+  // Settings split in two: mode switches you'd flip mid-game (suggestion style,
+  // hint interval) stay always visible; tuning knobs you set once (depth,
+  // arrows, threshold) collapse behind the ⚙ toggle so the everyday view stays
+  // short — both live in THIS panel, never a separate options page, so
+  // changing them never means leaving the game tab.
+  function buildPanel(ctx, view, hintVisible) {
     const min = state.panelMin;
     const opening = view.synced ? detectOpening(view.uci) : null;
     const titleText = opening ? `${opening.eco} · ${opening.name}` : (OPENINGS ? t('outOfBook') : t('coach'));
     const minMaxLabel = min ? t('expand') : t('minimize');
+    const settingsLabel = state.settingsOpen ? t('hideAdvanced') : t('showAdvanced');
     const header = `<div class="cc-phead">
       <span class="cc-ptitle" title="${esc(titleText)}">♞ ${esc(titleText)}</span>
+      <button class="cc-pbtn${state.settingsOpen ? ' cc-pbtn--on' : ''}" data-act="settings" title="${esc(settingsLabel)}" aria-label="${esc(settingsLabel)}">⚙</button>
       <button class="cc-pbtn" data-act="panelmin" title="${esc(minMaxLabel)}" aria-label="${esc(minMaxLabel)}">${min ? '▢' : '—'}</button>
     </div>`;
     if (min) return header;
@@ -895,13 +1199,48 @@
     ).join('');
 
     const userSide = mapSide(bridgePlayingAs) || detectUserSide() || 'w';
-    return header + `<div class="cc-pbody">
-      <div class="cc-prow">${openingPicker(userSide)}</div>
+    const intervalOptions = ADAPTIVE_STEPS.concat(['1']).sort((a, b) => Number(a) - Number(b))
+      .map((n) => `<option value="${n}"${state.hintInterval === n ? ' selected' : ''}>${esc(intervalLabel(n))}</option>`)
+      .join('') +
+      `<option value="manual"${state.hintInterval === 'manual' ? ' selected' : ''}>${esc(t('intervalManual'))}</option>` +
+      `<option value="adaptive"${state.hintInterval === 'adaptive' ? ' selected' : ''}>${esc(t('intervalAdaptive'))}</option>`;
+    const recommendHtml = adaptiveRec.active ? `<div class="cc-prow cc-recommend">
+      <div class="cc-erow">${esc(t('adaptiveRecommend', intervalLabel(adaptiveRec.from), intervalLabel(adaptiveRec.to)))}</div>
+      <div class="cc-recommend-actions">
+        <button class="cc-pbtn" data-act="rec-keep">${esc(t('keepCurrent'))}</button>
+        <button class="cc-explain-btn" data-act="rec-increase">${esc(t('increase'))}</button>
+      </div>
+    </div>` : '';
+
+    // Quick-access: modes you'd realistically switch mid-game.
+    const quickSettingsHtml = `
+      <label class="cc-prow cc-select-row">${esc(t('suggestionStyle'))}<select class="cc-select" data-cc-style>
+        <option value="best"${state.suggestionStyle === 'best' ? ' selected' : ''}>${esc(t('styleBest'))}</option>
+        <option value="neutral"${state.suggestionStyle === 'neutral' ? ' selected' : ''}>${esc(t('styleNeutral'))}</option>
+      </select></label>
+      <label class="cc-prow cc-select-row">${esc(t('hintInterval'))}<select class="cc-select" data-cc-interval>${intervalOptions}</select></label>
+      <label class="cc-prow cc-select-row">${esc(t('displayLevel'))}<select class="cc-select" data-cc-displaylevel>
+        <option value="full"${state.displayLevel === 'full' ? ' selected' : ''}>${esc(t('displayFull'))}</option>
+        <option value="hint"${state.displayLevel === 'hint' ? ' selected' : ''}>${esc(t('displayHint'))}</option>
+        <option value="hidden"${state.displayLevel === 'hidden' ? ' selected' : ''}>${esc(t('displayHidden'))}</option>
+      </select></label>`;
+
+    // Advanced: tuning knobs you set once and rarely revisit.
+    const neutralSliderHtml = state.suggestionStyle === 'neutral' ? `<label class="cc-prow cc-depth">${esc(t('neutralThreshold'))} <output data-cc-neutral-val>${(state.neutralThreshold / 100).toFixed(2)}</output>
+        <input type="range" min="${NEUTRAL_THRESHOLD_MIN}" max="${NEUTRAL_THRESHOLD_MAX}" step="5" value="${state.neutralThreshold}" data-cc-neutral></label>` : '';
+    const advancedSettingsHtml = state.settingsOpen ? `
       <label class="cc-prow cc-depth">${esc(t('depth'))} <output data-cc-depth-val>${state.depth}</output>
         <input type="range" min="6" max="22" step="1" value="${state.depth}" data-cc-depth></label>
       <label class="cc-prow cc-depth">${esc(t('arrows'))} <output data-cc-arrows-val>${state.arrows}</output>
         <input type="range" min="${ARROW_MIN}" max="${ARROW_MAX}" step="1" value="${state.arrows}" data-cc-arrows></label>
-      <div class="cc-prow cc-results">${resultsHtml(view)}</div>
+      ${neutralSliderHtml}` : '';
+
+    return header + `<div class="cc-pbody">
+      <div class="cc-prow">${openingPicker(userSide)}</div>
+      ${quickSettingsHtml}
+      ${advancedSettingsHtml}
+      ${recommendHtml}
+      <div class="cc-prow cc-results">${resultsHtml(view, hintVisible)}</div>
       ${explainHtml(view)}
       <div class="cc-prow cc-legend">${legendHtml}</div>
     </div>`;
@@ -963,9 +1302,12 @@
 
     // Arrows (independent of the bar's text so a board re-render can't strand them).
     const haveEngine = engineState.status === 'done' && engineState.sig === curSig(view) && engineState.result;
-    const arrows = state.enabled ? computeArrows(view, haveEngine) : [];
+    // Hint interval: does the user's own pending decision (if any) get to show
+    // its suggestions right now? Always true when it isn't the user's move.
+    const hintVisible = state.enabled ? computeHintVisible(view) : true;
+    const arrows = state.enabled ? computeArrows(view, haveEngine, hintVisible) : [];
     const arrowSig = (isFlipped() ? 'f|' : 'n|') + view.fen + '|' +
-      arrows.map((a) => a.color + a.uci).join('|');
+      arrows.map((a) => a.color + (a.dot ? 'd' + a.square : a.uci)).join('|');
     if (arrowSig !== lastArrowSig || !document.getElementById(ARROW_ID)) {
       drawArrows(arrows);
       lastArrowSig = arrowSig;
@@ -974,8 +1316,10 @@
     const showPanel = state.enabled;
     panel.style.display = showPanel ? '' : 'none';
 
-    const sig = [ctx, state.enabled, state.panelMin, showPanel, state.openingId || 'auto',
-      state.depth, view.fen, view.synced, engineState.status, engineState.sig, !!OPENINGS].join('|');
+    const sig = [ctx, state.enabled, state.panelMin, state.settingsOpen, showPanel, state.openingId || 'auto',
+      state.depth, state.arrows, state.hintInterval, state.adaptiveBase, state.suggestionStyle,
+      state.neutralThreshold, state.displayLevel, hintVisible, adaptiveRec.active, adaptiveRec.to,
+      view.fen, view.synced, engineState.status, engineState.sig, !!OPENINGS].join('|');
     if (sig === lastSig) return;
     lastSig = sig;
 
@@ -985,7 +1329,7 @@
 
     if (showPanel) {
       panel.className = 'chess-coach-panel' + (state.panelMin ? ' is-min' : '');
-      panel.innerHTML = buildPanel(ctx, view);
+      panel.innerHTML = buildPanel(ctx, view, hintVisible);
       bindPanel(panel, view);
     }
   }
@@ -1002,15 +1346,45 @@
   }
 
   function bindPanel(el, view) {
-    el.querySelector('[data-act="explain"]')?.addEventListener('click', () => {
-      const haveEngine = engineState.status === 'done' && engineState.sig === curSig(view) && engineState.result;
-      if (!haveEngine) return;
-      const data = buildExplainInput(engineState.result);
+    el.querySelector('[data-act="explain"]')?.addEventListener('click', async () => {
+      const sig = curSig(view);
+      let res = (engineState.status === 'done' && engineState.sig === sig) ? engineState.result : null;
+      // A Show-Hint-triggered search for this exact position is already in
+      // flight — let it finish rather than enqueueing a redundant one.
+      if (!res && engineState.status === 'running' && engineState.sig === sig) return;
+      if (!res) {
+        // Display level "Hidden": no background result exists yet — this is the
+        // one-shot lazy search Explain promises (see explainHtml). Cache it into
+        // engineState like a normal search so a later Show Hint/re-click reuses
+        // it instead of searching again.
+        try {
+          const r = await engineGo(view.fen, { depth: state.depth, multipv: state.arrows });
+          if (curSig(view) !== sig) return; // position changed while we were searching
+          res = { lines: r.lines || [], pv: r.pv || [], score: r.score, pos: view.pos, sideToMove: view.pos.turn, replyLines: [], replyPos: null };
+          engineState.sig = sig;
+          engineState.status = 'done';
+          engineState.result = res;
+          // Explain's own reveal counts the same as Show Hint's — the AI text
+          // already names the best move, so there's no point leaving the results
+          // row above it stuck on the "Hidden" placeholder.
+          manualHintFens.add(view.fen);
+          lastSig = '';
+          render(detectContext());
+        } catch { return; }
+      }
+      const data = buildExplainInput(res);
       if (data) requestExplain(data);
     });
 
     el.querySelector('[data-act="panelmin"]')?.addEventListener('click', () => {
       state.panelMin = !state.panelMin;
+      save();
+      lastSig = '';
+      render(detectContext());
+    });
+
+    el.querySelector('[data-act="settings"]')?.addEventListener('click', () => {
+      state.settingsOpen = !state.settingsOpen;
       save();
       lastSig = '';
       render(detectContext());
@@ -1049,13 +1423,83 @@
         render(detectContext());
       });
     }
+
+    const styleSel = el.querySelector('[data-cc-style]');
+    if (styleSel) styleSel.addEventListener('change', () => {
+      state.suggestionStyle = styleSel.value === 'neutral' ? 'neutral' : 'best';
+      save();
+      lastSig = '';
+      render(detectContext());
+    });
+
+    const neutralRange = el.querySelector('[data-cc-neutral]');
+    if (neutralRange) {
+      const out = el.querySelector('[data-cc-neutral-val]');
+      neutralRange.addEventListener('input', () => { if (out) out.textContent = (neutralRange.value / 100).toFixed(2); });
+      neutralRange.addEventListener('change', () => {
+        state.neutralThreshold = Math.max(NEUTRAL_THRESHOLD_MIN, Math.min(NEUTRAL_THRESHOLD_MAX, parseInt(neutralRange.value, 10) || NEUTRAL_THRESHOLD_DEFAULT));
+        save();
+        lastSig = '';
+        render(detectContext());
+      });
+    }
+
+    const intervalSel = el.querySelector('[data-cc-interval]');
+    if (intervalSel) intervalSel.addEventListener('change', () => {
+      state.hintInterval = intervalSel.value;
+      save();
+      lastSig = '';
+      render(detectContext());
+    });
+
+    const displaySel = el.querySelector('[data-cc-displaylevel]');
+    if (displaySel) displaySel.addEventListener('change', () => {
+      state.displayLevel = ['full', 'hint', 'hidden'].includes(displaySel.value) ? displaySel.value : 'full';
+      save();
+      // No need to invalidate engineState.sig: switching levels never changes
+      // depth/multipv, so any already-computed result is still valid data —
+      // only how it's RENDERED changes. Switching to Hidden hides it from view
+      // immediately (see resultsHtml); switching away from Hidden naturally
+      // triggers a fresh search on its own, since maybeAnalyze only skipped it
+      // in the first place because no result existed yet for this position.
+      lastSig = '';
+      render(detectContext());
+    });
+
+    // Manual "Show Hint" — always works regardless of the interval; reveals
+    // suggestions for exactly this position and feeds the Adaptive heuristic
+    // (see recordHintOutcome) once this move is graded.
+    el.querySelector('[data-act="showhint"]')?.addEventListener('click', () => {
+      manualHintFens.add(view.fen);
+      lastSig = '';
+      render(detectContext());
+    });
+
+    // Adaptive recommendation banner — purely a suggestion; the app never
+    // changes the interval on its own, only in response to one of these clicks.
+    el.querySelector('[data-act="rec-keep"]')?.addEventListener('click', () => {
+      adaptiveRec.active = false;
+      hintLogRecommendedAt = hintLog.length;
+      lastSig = '';
+      render(detectContext());
+    });
+    el.querySelector('[data-act="rec-increase"]')?.addEventListener('click', () => {
+      if (adaptiveRec.to) { state.adaptiveBase = adaptiveRec.to; save(); }
+      adaptiveRec.active = false;
+      hintLogRecommendedAt = hintLog.length;
+      lastSig = '';
+      render(detectContext());
+    });
   }
 
   function save() {
     try {
       chrome.storage.local.set({
         ccEnabled: state.enabled, ccDepth: state.depth, ccOpening: state.openingId,
-        ccPanelMin: state.panelMin, ccArrows: state.arrows
+        ccPanelMin: state.panelMin, ccArrows: state.arrows,
+        ccHintInterval: state.hintInterval, ccAdaptiveBase: state.adaptiveBase,
+        ccSuggestionStyle: state.suggestionStyle, ccNeutralThreshold: state.neutralThreshold,
+        ccSettingsOpen: state.settingsOpen, ccDisplayLevel: state.displayLevel
       });
     } catch {}
   }
@@ -1087,13 +1531,21 @@
   }
 
   try {
-    chrome.storage.local.get(['ccEnabled', 'ccDepth', 'ccOpening', 'ccPanelMin', 'ccArrows', 'ccLanguage'], (o) => {
+    chrome.storage.local.get(['ccEnabled', 'ccDepth', 'ccOpening', 'ccPanelMin', 'ccArrows', 'ccLanguage',
+      'ccHintInterval', 'ccAdaptiveBase', 'ccSuggestionStyle', 'ccNeutralThreshold', 'ccSettingsOpen', 'ccDisplayLevel'], (o) => {
       state.enabled = o.ccEnabled !== false;
       state.depth = Math.max(6, Math.min(22, o.ccDepth || 14));
       state.openingId = o.ccOpening || null;
       state.panelMin = !!o.ccPanelMin;
       state.arrows = Math.max(ARROW_MIN, Math.min(ARROW_MAX, o.ccArrows || 3));
       state.lang = o.ccLanguage === 'vi' ? 'vi' : 'en';
+      const validIntervals = ADAPTIVE_STEPS.concat(['1', 'manual', 'adaptive']);
+      state.hintInterval = validIntervals.includes(o.ccHintInterval) ? o.ccHintInterval : '1';
+      state.adaptiveBase = ADAPTIVE_STEPS.includes(o.ccAdaptiveBase) ? o.ccAdaptiveBase : '2';
+      state.suggestionStyle = o.ccSuggestionStyle === 'neutral' ? 'neutral' : 'best';
+      state.neutralThreshold = Math.max(NEUTRAL_THRESHOLD_MIN, Math.min(NEUTRAL_THRESHOLD_MAX, o.ccNeutralThreshold || NEUTRAL_THRESHOLD_DEFAULT));
+      state.settingsOpen = !!o.ccSettingsOpen;
+      state.displayLevel = ['full', 'hint', 'hidden'].includes(o.ccDisplayLevel) ? o.ccDisplayLevel : 'full';
       start();
     });
     // The language lives on the options page, a separate context — pick up a

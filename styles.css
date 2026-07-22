@@ -233,12 +233,43 @@
   line-height: 1;
 }
 .cc-pbtn:hover { background: rgba(255, 255, 255, 0.08); }
+.cc-pbtn--on { background: rgba(118, 153, 0, 0.22); border-color: rgba(118, 153, 0, 0.45); color: #b6d36b; }
 
 .cc-pbody { padding: 9px 10px; display: flex; flex-direction: column; gap: 9px; }
 .cc-prow { margin: 0; }
 .cc-pbody .cc-select { flex: 1 1 auto; max-width: none; width: 100%; }
 .cc-pbody .cc-depth { font-size: 12px; }
 .cc-pbody .cc-depth input[type="range"] { flex: 1; width: auto; }
+
+/* Suggestion style / hint interval: a label with a select pinned to the right,
+   same footprint as the depth/arrows rows above them. */
+.cc-select-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 12px;
+  color: #bdbbb7;
+}
+.cc-select-row .cc-select { flex: 0 1 auto; max-width: 132px; width: auto; }
+
+/* Hint interval: the "your move" suggestions are hidden until due/revealed. */
+.cc-hint-hidden { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; width: 100%; }
+.cc-hint-hidden .cc-explain-btn { width: auto; padding: 4px 10px; }
+
+/* Adaptive mode's recommendation banner — a suggestion only, never applied
+   without the user clicking one of these two buttons. */
+.cc-recommend {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+}
+.cc-recommend-actions { display: flex; gap: 6px; }
+.cc-recommend-actions .cc-pbtn, .cc-recommend-actions .cc-explain-btn { flex: 1; width: auto; height: auto; padding: 5px 8px; }
 .cc-results { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
 .cc-results:empty { display: none; }
 /* One line per side: a white/black dot (à la Lichess) then that side's moves,
