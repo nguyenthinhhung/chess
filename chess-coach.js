@@ -312,6 +312,18 @@
     return within.length >= 2 ? within : null;
   }
 
+  // The candidates to show when Suggestion Style is Neutral — ALWAYS a list
+  // (never null), so every caller renders flat/unranked regardless of the
+  // "fewer than 2 within threshold" case. Falls back to just the single best
+  // move rather than reverting the whole display to Best-move's rank colours/
+  // eval reveal — that reversion is exactly the leak reported: a position
+  // with a uniquely-best move must not visibly switch styling out from under
+  // Neutral, or the switch itself gives away "this move stands out."
+  function neutralCandidates(res) {
+    if (state.suggestionStyle !== 'neutral') return null;
+    return neutralFilter(res.lines, state.neutralThreshold) || res.lines.slice(0, 1);
+  }
+
   window.addEventListener('message', (e) => {
     if (e.source !== window) return;
     const d = e.data;
@@ -848,52 +860,43 @@
       const res = engineState.result;
       const rank = (i) => RANK_COLORS[Math.min(i, RANK_COLORS.length - 1)];
       const budget = state.arrows - (bm ? 1 : 0);
-      const neutral = state.suggestionStyle === 'neutral' ? neutralFilter(res.lines, state.neutralThreshold) : null;
+      // ALWAYS a list when Suggestion Style is Neutral (never null) — see
+      // neutralCandidates: the "fewer than 2 within threshold" case must stay
+      // flat-coloured too, or the colour switch itself leaks "this move stands
+      // out", exactly the reveal Neutral is supposed to withhold.
+      const neutral = neutralCandidates(res);
       // Display level's rendering choice (dot vs arrow) applies uniformly no
       // matter whose turn is shown — only whether the engine RUNS AT ALL is
       // scoped to your own move (shouldSkipEngine); otherwise switching turns
       // while browsing would flip between dots and arrows, which is confusing.
       const displayHint = isHintLevelDisplay(view);
 
+      // The pool to draw from, and the colour for the n-th one in it: Neutral
+      // is always the flat colour (n unused); Best-move is always rank(n).
+      const pool = neutral || res.lines;
+      const colorOf = neutral ? () => NEUTRAL_COLOR : rank;
+
       if (displayHint) {
         // Display level "Hint": no path, no eval, no notation — just a dot on
-        // the square of the piece to move, for every qualifying candidate.
-        // Colour follows Suggestion Style *as chosen*, not whether the
-        // threshold fallback happened to kick in: Neutral always stays one
-        // flat colour, even on a position where fewer than 2 candidates
-        // qualified (the fallback pool is just the single best move then) —
-        // switching to rank colours there would silently leak "this position
-        // has a uniquely-best move", which Gợi ý is supposed to withhold.
-        // Best-move keeps the rank colours, same candidates Full mode would
-        // arrow. A square shared by two candidates keeps the better one's
-        // colour (we fill best-first).
+        // the square of the piece to move, for every qualifying candidate. A
+        // square shared by two candidates keeps the better one's colour (we
+        // fill best-first).
         const squares = new Map();
-        if (state.suggestionStyle === 'neutral') {
-          const candidates = neutral || res.lines.slice(0, 1);
-          candidates.filter((ln) => ln.move && !(bm && ln.move === bm)).slice(0, Math.max(0, budget))
-            .forEach((ln) => { const s = ln.move.slice(0, 2); if (!squares.has(s)) squares.set(s, NEUTRAL_COLOR); });
-        } else {
-          let n = 0;
-          for (const ln of res.lines) {
-            if (n >= budget) break;
-            if (!ln.move || (bm && ln.move === bm)) continue;
-            const s = ln.move.slice(0, 2);
-            if (!squares.has(s)) squares.set(s, rank(n));
-            n++;
-          }
-        }
-        squares.forEach((color, s) => arrows.push({ square: s, color, dot: true }));
-      } else if (neutral) {
-        // Neutral Hint: every equivalent candidate, one flat colour — no rank.
-        neutral.filter((ln) => !(bm && ln.move === bm)).slice(0, Math.max(0, budget))
-          .forEach((ln) => arrows.push({ uci: ln.move, color: NEUTRAL_COLOR }));
-      } else {
-        // Best-move (or Neutral fell back — fewer than 2 equivalent candidates).
         let n = 0;
-        for (const ln of res.lines) {
+        for (const ln of pool) {
           if (n >= budget) break;
           if (!ln.move || (bm && ln.move === bm)) continue;
-          arrows.push({ uci: ln.move, color: rank(n) });
+          const s = ln.move.slice(0, 2);
+          if (!squares.has(s)) squares.set(s, colorOf(n));
+          n++;
+        }
+        squares.forEach((color, s) => arrows.push({ square: s, color, dot: true }));
+      } else {
+        let n = 0;
+        for (const ln of pool) {
+          if (n >= budget) break;
+          if (!ln.move || (bm && ln.move === bm)) continue;
+          arrows.push({ uci: ln.move, color: colorOf(n) });
           n++;
         }
       }
@@ -1126,7 +1129,7 @@
       if (isHintLevelDisplay(view)) {
         chips += `<div class="cc-erow">${esc(t('hintDotMsg'))}</div>`;
       } else {
-        const neutralAfter = state.suggestionStyle === 'neutral' ? neutralFilter(res.lines, state.neutralThreshold) : null;
+        const neutralAfter = neutralCandidates(res);
         const afterOpts = {};
         if (neutralAfter) afterOpts.neutral = neutralAfter;
         if (bm) afterOpts.bookMove = bm;
@@ -1155,7 +1158,7 @@
     // to move here (the "mine" side) — the other side's line is a hypothetical
     // future reply, unaffected.
     const mineOpts = sideToMove === 'w' ? whiteOpts : blackOpts;
-    const neutralMine = state.suggestionStyle === 'neutral' ? neutralFilter(res.lines, state.neutralThreshold) : null;
+    const neutralMine = neutralCandidates(res);
     if (neutralMine) mineOpts.neutral = neutralMine;
     if (bm) mineOpts.bookMove = bm;
     chips += sideLine('w', white.list, white.pos, whiteOpts);
