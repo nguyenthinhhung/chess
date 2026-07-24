@@ -128,6 +128,28 @@ test('buildExplainPrompt live (no played move): opponentReply reads from the PV'
   assert.match(user, /Opponent's best reply: Nc3/);
 });
 
+test('buildExplainPrompt reframes when the opponent is to move', () => {
+  // BASE fen has Black to move; coaching White → the analyzed position is the
+  // opponent's move, so the engine's best move is the opponent's, not the user's,
+  // and PV move 2 is the user's own reply. The framing must reflect that instead
+  // of narrating the opponent's move as the user's (the "you vs opponent" mixup).
+  const { system, user } = buildExplainPrompt({ ...BASE, userSide: 'w' });
+  assert.match(system, /the engine's best move is THEIRS/);
+  assert.match(system, /Never present the opponent's move as yours to play/);
+  assert.match(system, /a concrete plan for YOU \(the coached side\) to meet what the opponent is doing/);
+  // PV move 2 is the user's reply here — it must not be mislabeled as the opponent's.
+  assert.match(user, /Your best reply: Nc3/);
+  assert.doesNotMatch(user, /Opponent's best reply/);
+});
+
+test('buildExplainPrompt keeps the you-to-move framing when the coached side moves', () => {
+  // Coaching Black with Black to move → the engine's best move IS the user's;
+  // none of the opponent-to-move reframing should leak in.
+  const { system, user } = buildExplainPrompt({ ...BASE, userSide: 'b' });
+  assert.doesNotMatch(system, /the engine's best move is THEIRS/);
+  assert.match(user, /Opponent's best reply: Nc3/);
+});
+
 test('buildExplainPrompt review (played move known): compares best vs played', () => {
   const { system, user } = buildExplainPrompt({
     ...BASE, playedMove: 'd5', playedDescription: 'Black pawn d7–d5'

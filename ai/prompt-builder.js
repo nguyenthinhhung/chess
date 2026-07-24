@@ -64,9 +64,10 @@ function shouldSkipExplain(data) {
 // wrong or worse (e.g. the SAN/piece-description grounding added in v2, the
 // coached-side perspective + opponentReply field added in v4, the strategy-first
 // 3-field schema in v5, the computed position-facts block in v6, the
-// PV-anchoring + principle field in v7), so stale explanations aren't served
-// from chrome.storage.local after an update.
-const EXPLAIN_CACHE_VERSION = 7;
+// PV-anchoring + principle field in v7, the opponent-to-move perspective flip
+// in v8), so stale explanations aren't served from chrome.storage.local after
+// an update.
+const EXPLAIN_CACHE_VERSION = 8;
 
 // The strategic vocabulary the "plan" field draws from. Each theme carries a
 // `when(facts)` predicate so we offer the model only the ideas THIS position
@@ -142,11 +143,48 @@ function buildExplainPrompt(data) {
     : null;
   const hasPlayed = !!playedLine;
 
+  // Whose move is it, relative to the coached player? The analyzed position is
+  // very often the OPPONENT to move — the live head right after the user played,
+  // or a browsed opponent ply. When it is, the engine's "best move" is the
+  // OPPONENT's, and the principal variation's 2nd move is the user's own reply.
+  // If the field instructions still assume "you are to move" (as they did
+  // through v7), the model narrates the opponent's move as if it were the
+  // user's, which reads as the coach mixing up "you" and "the opponent". So the
+  // three move-oriented fields flip their framing when the opponent is to move.
+  const oppToMove = !!data.userSide && sideToMoveName(data.fen) !== sideName(data.userSide);
+
   // Structural facts computed from the board (material, king safety, files, weak
   // pawns, outposts) — the grounding the "plan" field leans on, and the basis
   // for offering only the strategic themes this position actually supports.
   const facts = _pbFacts ? _pbFacts.describePosition(data.fen) : null;
   const factsText = facts && facts.lines && facts.lines.length ? facts.lines.join('\n') : null;
+
+  // The three move-oriented fields, each framed for whose move it actually is.
+  // "whyBest" (shown under "⭐ Best move"), "plan" ("🎯 Plan" — always the user's
+  // own plan), and "opponentReply" ("🛡 What the opponent wants"). When the
+  // opponent is to move these must NOT present the opponent's move as the user's.
+  const whyBestInstr = hasPlayed
+    ? (oppToMove
+      ? '"whyBest": open with a three-word read of who stands better ("You are winning/better/slightly better", "Roughly equal", "You are worse"), then in one sentence — the side to move here is the OPPONENT, so the engine\'s best move is THEIRS, not yours — say what the opponent\'s strongest move threatens and how the move they actually played compares (did it create more or fewer problems for you, and why). Never present the opponent\'s move as yours to play.'
+      : '"whyBest": open with a three-word read of who stands better ("You are winning/better/slightly better", "Roughly equal", "You are worse"), then in one sentence what the engine\'s best move does and how the move actually played compares (better/worse and why); if the played move falls outside the candidate list, say so rather than inventing a number.')
+    : (oppToMove
+      ? '"whyBest": open with a three-word read of who stands better ("You are winning/better/slightly better", "Roughly equal", "You are worse"), then in one sentence — the side to move here is the OPPONENT, so the engine\'s best move is THEIRS, not yours — what that move threatens and what it means for you. Never present the opponent\'s move as yours to play.'
+      : '"whyBest": open with a three-word read of who stands better ("You are winning/better/slightly better", "Roughly equal", "You are worse"), then in one sentence what the best move concretely does (the piece, any capture or check) and the idea behind it.');
+
+  const planInstr = (oppToMove
+    ? '"plan": a concrete plan for YOU (the coached side) to meet what the opponent is doing, over the next 5–8 moves, chosen to fit the Position facts.'
+    : '"plan": a concrete plan for the coached side over the next 5–8 moves, chosen to fit the Position facts.') +
+    ' Pick the one or two most relevant of these ideas (offered because the position supports them) and make them specific to this board (which piece, which file, which break, which square):\n- ' +
+    selectThemes(facts).join('\n- ') +
+    '\nName the plan in terms of this position, not as a generic list. Give the moves as a short idea (e.g. "reroute the knight Nc2–e3–d5") rather than a long forced line.';
+
+  const replyInstr = hasPlayed
+    ? (oppToMove
+      ? '"opponentReply": what the opponent is going for with the move they played — the plan or threat behind it, read from the evaluation gap and the principal variation; if nothing concrete is shown, say the idea is positional rather than a forced line.'
+      : '"opponentReply": how the opponent exploits the played move, using ONLY the evaluation gap and the principal variation; if nothing concrete is shown, say the punishment is positional rather than a forced line.')
+    : (oppToMove
+      ? '"opponentReply": what the opponent is ultimately trying to achieve here — the idea behind their best move that you must watch. The principal variation\'s 2nd move is YOUR reply, so do not present it as the opponent\'s; if the position is quiet, say so rather than inventing threats.'
+      : '"opponentReply": the opponent\'s best reply (the second move of the principal variation) and the one idea behind it the coached player must watch; if the position is quiet, say so rather than inventing counterplay.');
 
   const langName = LANG_NAMES[data.lang];
   // Stockfish's raw numbers (eval, candidate moves + scores, the PV) are already
@@ -168,13 +206,9 @@ function buildExplainPrompt(data) {
     'Moves are given in SAN; the best move also names exactly which piece moves and what it captures. Use those identities verbatim — never re-derive a piece from the FEN or rename one (e.g. knight vs bishop).',
     'A "Position facts" block, computed directly from the board, gives the material, game phase, where each king castled, the open/half-open files, the weak pawns, and the outpost squares. Treat it as ground truth: build your plan on those facts and do NOT contradict them or re-read the structure from the FEN yourself. If it lists no weakness of some kind, do not claim one.',
     'Fill the four fields exactly:',
-    hasPlayed
-      ? '"whyBest": open with a three-word read of who stands better ("You are winning/better/slightly better", "Roughly equal", "You are worse"), then in one sentence what the engine\'s best move does and how the move actually played compares (better/worse and why); if the played move falls outside the candidate list, say so rather than inventing a number.'
-      : '"whyBest": open with a three-word read of who stands better ("You are winning/better/slightly better", "Roughly equal", "You are worse"), then in one sentence what the best move concretely does (the piece, any capture or check) and the idea behind it.',
-    '"plan": a concrete plan for the coached side over the next 5–8 moves, chosen to fit the Position facts. Pick the one or two most relevant of these ideas (offered because the position supports them) and make them specific to this board (which piece, which file, which break, which square):\n- ' + selectThemes(facts).join('\n- ') + '\nName the plan in terms of this position, not as a generic list. Give the moves as a short idea (e.g. "reroute the knight Nc2–e3–d5") rather than a long forced line.',
-    hasPlayed
-      ? '"opponentReply": how the opponent exploits the played move, using ONLY the evaluation gap and the principal variation; if nothing concrete is shown, say the punishment is positional rather than a forced line.'
-      : '"opponentReply": the opponent\'s best reply (the second move of the principal variation) and the one idea behind it the coached player must watch; if the position is quiet, say so rather than inventing counterplay.',
+    whyBestInstr,
+    planInstr,
+    replyInstr,
     '"principle": one short, transferable chess maxim a 1200 player can reuse in other games (e.g. "rooks belong on open files"), tied in a few words to why it applies here.',
     'Keep all four fields together under ~150 words total.',
     langName ? `Write every text field in ${langName}, including chess terms where a natural translation exists.` : null,
@@ -190,10 +224,11 @@ function buildExplainPrompt(data) {
     playedLine ? `Move actually played from this position: ${playedLine}` : null,
     `Evaluation: ${fmtEval(data.eval)}`,
     `Principal variation: ${pv}`,
-    // Spell out the opponent's reply (PV move 2) so the model grounds
-    // "opponentReply" on it instead of guessing — weaker models mis-count PV
-    // tokens. Only meaningful live (in review, the played move has its own line).
-    !hasPlayed && (replySan) ? `Opponent's best reply: ${replySan}` : null,
+    // Spell out PV move 2 so the model grounds "opponentReply" on it instead of
+    // guessing — weaker models mis-count PV tokens. Only meaningful live (in
+    // review, the played move has its own line). Whose reply it is depends on
+    // the side to move: when the opponent is to move, PV move 2 is the user's.
+    !hasPlayed && replySan ? `${oppToMove ? 'Your best reply' : "Opponent's best reply"}: ${replySan}` : null,
     topMoves ? `Candidate moves (best first):\n${topMoves}` : null
   ].filter(Boolean).join('\n');
 
