@@ -1,7 +1,12 @@
 // chess-coach.js — an in-game coach for chess.com. It recognises the opening
 // (from a bundled ECO database), guides you along a chosen opening's book moves,
-// and once out of book draws Stockfish's top moves as arrows directly on the
-// board — plus the opponent's likely reply, so you can read their intention.
+// and once out of book shows Stockfish's top moves on the board — plus the
+// opponent's likely reply, so you can read their intention.
+//
+// A display switch (state.hintMode) sets how much is revealed: 'full' draws
+// arrows + panel scores + move review; 'pieces' draws only a coloured dot on
+// the piece(s) to move, so you work out where yourself; 'none' shows nothing
+// and keeps Stockfish idle until you tap Explain (a lazy, on-demand search).
 //
 // Loaded after content.js in the same isolated world; the MAIN-world bridge
 // (chess-coach-bridge.js) feeds it the live move list via postMessage.
@@ -114,7 +119,13 @@
 
   // enabled: the lightbulb toggle. depth: Stockfish search depth. openingId: a
   // POPULAR name to train, or null = auto-detect.
-  const state = { enabled: true, depth: 14, openingId: null, panelMin: false, arrows: 3, lang: 'en' };
+  //   hintMode — how much of the suggestion to reveal on the board:
+  //     'full'   arrows + panel scores + move review (the original behaviour)
+  //     'pieces' only a coloured dot on the piece(s) to move; you work out where
+  //     'none'   nothing on the board; Stockfish stays idle and runs only when
+  //              you tap Explain (lazy — see maybeAnalyze / the explain path)
+  const HINT_MODES = ['full', 'pieces', 'none'];
+  const state = { enabled: true, hintMode: 'full', depth: 14, openingId: null, panelMin: false, arrows: 3, lang: 'en' };
   let lastSig = '';
   let lastArrowSig = '';
 
@@ -137,6 +148,10 @@
   //   key: cacheKeyFor-style string identifying which position this belongs to
   //   status: 'idle' | 'running' | 'done' | 'error'
   const explainState = { key: null, status: 'idle', data: null, error: null };
+  // 'none' mode runs no continuous analysis, so an Explain click has nothing to
+  // feed the AI. When that happens we kick off a one-off search and remember its
+  // sig here; runEngine fires the explanation itself once that search lands.
+  let explainAfterAnalyze = null;
   // Circuit breaker: after repeated failures, stop touching the engine for the
   // rest of the session so a broken Stockfish can never be spawned in a loop.
   let engineFailures = 0;
@@ -421,6 +436,16 @@
       lastSig = '';
       render(detectContext());
 
+      // Lazy Explain ('none' mode): this search was started by an Explain click
+      // that had no analysis to work from. The main result is enough for the AI
+      // (best move, eval, PV, top lines), so fire it now — the reply/review
+      // searches below add nothing to the explanation.
+      if (explainAfterAnalyze === sig) {
+        explainAfterAnalyze = null;
+        const data = buildExplainInput(engineState.result);
+        if (data) requestExplain(data);
+      }
+
       const best = r.lines && r.lines[0];
       const userSide = mapSide(bridgePlayingAs) || detectUserSide() || 'w';
       // When it is the opponent's turn at the live head, the user has just moved
@@ -428,7 +453,10 @@
       // the move they just made. This needs no extra-cost search beyond the
       // parent: the played move's value is the CURRENT eval (opponent to move)
       // negated, and the best is the parent's own top line.
-      const reviewable = view.synced && view.uci.length >= 1 && atLiveHead() && pos.turn !== userSide;
+      // 'none' mode draws nothing, so the extra reply/review searches (which
+      // only feed board arrows and the panel verdict) would be wasted work.
+      const reviewable = state.hintMode !== 'none' &&
+        view.synced && view.uci.length >= 1 && atLiveHead() && pos.turn !== userSide;
 
       if (reviewable && !pendingView) {
         try {
@@ -457,7 +485,7 @@
             }
           }
         } catch {} // the review is optional — keep the published main result
-      } else if (best && best.move && !pendingView) {
+      } else if (best && best.move && !pendingView && state.hintMode !== 'none') {
         // Second search: the other side's top replies AFTER the best move, so the
         // opponent gets candidate arrows too (symmetric with yours). Skipped when
         // a newer position is already waiting — its main search matters more than
@@ -609,8 +637,21 @@
   // self-contained row like resultsHtml(), recomputing haveEngine itself.
   function explainHtml(view) {
     if (!AiPrompt) return '';
-    const haveEngine = engineState.status === 'done' && engineState.sig === curSig(view) && engineState.result;
-    if (!haveEngine) return '';
+    const sig = curSig(view);
+    const haveEngine = engineState.status === 'done' && engineState.sig === sig && engineState.result;
+    if (!haveEngine) {
+      // With arrows/pieces the engine runs continuously, so the button simply
+      // waits (returns '') until the result lands. In 'none' mode nothing is
+      // running, so offer the button up front — or a spinner while the one-off
+      // search we kicked off is in flight.
+      if (state.hintMode !== 'none') return '';
+      const analysing = explainAfterAnalyze === sig ||
+        (engineState.status === 'running' && engineState.sig === sig);
+      if (analysing) {
+        return `<div class="cc-prow cc-explain"><span class="cc-chip cc-info">${esc(t('analysing'))}</span></div>`;
+      }
+      return `<div class="cc-prow cc-explain"><button class="cc-explain-btn" data-act="explain">${esc(t('explainThisMove'))}</button></div>`;
+    }
 
     const data = buildExplainInput(engineState.result);
     const skip = AiPrompt.shouldSkipExplain(data);
@@ -690,6 +731,38 @@
     return arrows;
   }
 
+  // Piece-hint mode: a coloured dot on the FROM-square of each recommended move
+  // (book first, then engine candidates, rank-coloured), so the player learns
+  // which piece to move but must work out the destination themselves. Only the
+  // side-to-move's own moves — never destinations, scores or opponent replies.
+  // Deduped by square: several good moves of one piece read as a single hint.
+  //   { square: 'e2', color }
+  function computePieceHints(view, haveEngine) {
+    const dots = [];
+    const seen = new Set();
+    const add = (uci, color) => {
+      if (!uci || uci.length < 2) return false;
+      const sq = uci.slice(0, 2);
+      if (seen.has(sq)) return false;
+      seen.add(sq);
+      dots.push({ square: sq, color });
+      return true;
+    };
+    const opening = view.synced ? detectOpening(view.uci) : null;
+    const bm = view.synced ? bookMove(view.uci, opening) : null;
+    if (bm) add(bm, BOOK_COLOR);
+    if (haveEngine) {
+      const budget = state.arrows - (bm ? 1 : 0);
+      let n = 0;
+      for (const ln of engineState.result.lines) {
+        if (n >= budget) break;
+        if (!ln.move || (bm && ln.move === bm)) continue;
+        if (add(ln.move, rankColor(n))) n++;
+      }
+    }
+    return dots;
+  }
+
   // A smooth Lichess-style arrow as a single polygon (tapered shaft + head),
   // expressed in board-square units. Kept slim so it obscures the squares as
   // little as possible.
@@ -713,9 +786,13 @@
     return pts.map((p) => p[0].toFixed(3) + ',' + p[1].toFixed(3)).join(' ');
   }
 
-  function drawArrows(list) {
+  // Both the full-mode arrows and the piece-mode dots live in one SVG overlay
+  // (only one mode is ever non-empty at a time). Dots sit in the top-right
+  // corner of their square so they don't sit under chess.com's own last-move
+  // highlight or the piece glyph.
+  function drawOverlay(arrows, dots) {
     const board = findBoard();
-    if (!board || !list.length) { clearArrows(); return; }
+    if (!board || (!arrows.length && !dots.length)) { clearArrows(); return; }
     const flipped = isFlipped();
 
     let svg = document.getElementById(ARROW_ID);
@@ -733,7 +810,7 @@
     }
 
     let shapes = '';
-    for (const a of list) {
+    for (const a of arrows) {
       const ff = a.uci.charCodeAt(0) - 97, fr = +a.uci[1];
       const tf = a.uci.charCodeAt(2) - 97, tr = +a.uci[3];
       if (ff < 0 || ff > 7 || tf < 0 || tf > 7 || !(fr >= 1 && fr <= 8) || !(tr >= 1 && tr <= 8)) continue;
@@ -742,6 +819,14 @@
       const op = a.dim ? 0.38 : 0.62;
       shapes += `<polygon points="${poly}" fill="${a.color}" stroke="${a.color}" ` +
         `stroke-width="0.02" stroke-linejoin="round" opacity="${op}"></polygon>`;
+    }
+    for (const d of dots) {
+      const f = d.square.charCodeAt(0) - 97, r = +d.square[1];
+      if (f < 0 || f > 7 || !(r >= 1 && r <= 8)) continue;
+      const c = squareCentre(f, r, flipped);   // square centre; corner is ±0.5
+      const cx = c.x + 0.5 - 0.2, cy = c.y - 0.5 + 0.2; // top-right corner, inset
+      shapes += `<circle cx="${cx.toFixed(3)}" cy="${cy.toFixed(3)}" r="0.13" ` +
+        `fill="${d.color}" stroke="#fff" stroke-width="0.035" opacity="0.95"></circle>`;
     }
     svg.innerHTML = shapes;
   }
@@ -895,16 +980,40 @@
     ).join('');
 
     const userSide = mapSide(bridgePlayingAs) || detectUserSide() || 'w';
+    // Rows that only make sense once suggestions are actually shown. In 'none'
+    // mode the board stays clean and Stockfish is idle, so the suggestion-count
+    // slider, the score chips and the colour legend all drop away — leaving just
+    // the display switch, depth (which still tunes the on-demand Explain search)
+    // and the Explain button. Score chips are exclusive to 'full': revealing
+    // them in 'pieces' mode would defeat the "work it out yourself" point.
+    const showCount = state.hintMode !== 'none';
+    const showResults = state.hintMode === 'full';
+    const showLegend = state.hintMode !== 'none';
     return header + `<div class="cc-pbody">
+      ${modeSwitch()}
       <div class="cc-prow">${openingPicker(userSide)}</div>
       <label class="cc-prow cc-depth">${esc(t('depth'))} <output data-cc-depth-val>${state.depth}</output>
         <input type="range" min="6" max="22" step="1" value="${state.depth}" data-cc-depth></label>
-      <label class="cc-prow cc-depth">${esc(t('arrows'))} <output data-cc-arrows-val>${state.arrows}</output>
-        <input type="range" min="${ARROW_MIN}" max="${ARROW_MAX}" step="1" value="${state.arrows}" data-cc-arrows></label>
-      <div class="cc-prow cc-results">${resultsHtml(view)}</div>
+      ${showCount ? `<label class="cc-prow cc-depth">${esc(t('suggestions'))} <output data-cc-arrows-val>${state.arrows}</output>
+        <input type="range" min="${ARROW_MIN}" max="${ARROW_MAX}" step="1" value="${state.arrows}" data-cc-arrows></label>` : ''}
+      ${showResults ? `<div class="cc-prow cc-results">${resultsHtml(view)}</div>` : ''}
       ${explainHtml(view)}
-      <div class="cc-prow cc-legend">${legendHtml}</div>
+      ${showLegend ? `<div class="cc-prow cc-legend">${legendHtml}</div>` : ''}
     </div>`;
+  }
+
+  // Three-way display switch (Hidden / Pieces / Full), least → most verbose.
+  function modeSwitch() {
+    const opts = [
+      { id: 'none', label: t('modeNone'), title: t('modeNoneTitle') },
+      { id: 'pieces', label: t('modePieces'), title: t('modePiecesTitle') },
+      { id: 'full', label: t('modeFull'), title: t('modeFullTitle') }
+    ];
+    const btns = opts.map((o) =>
+      `<button type="button" class="cc-mode-btn${state.hintMode === o.id ? ' is-active' : ''}" data-cc-mode="${o.id}" title="${esc(o.title)}" aria-pressed="${state.hintMode === o.id}">${esc(o.label)}</button>`
+    ).join('');
+    return `<div class="cc-prow cc-mode-row"><span class="cc-mode-label">${esc(t('displayMode'))}</span>` +
+      `<div class="cc-modes" role="group" aria-label="${esc(t('displayMode'))}">${btns}</div></div>`;
   }
 
   // The position we'd analyze doesn't (yet) match what's really on screen —
@@ -958,23 +1067,29 @@
       return;
     }
 
-    // Kick off / refresh continuous analysis only while coaching is on.
-    if (state.enabled) maybeAnalyze(view);
+    // Kick off / refresh continuous analysis only while coaching is on AND a
+    // mode that shows something is selected. 'none' keeps Stockfish idle until
+    // an Explain click starts a one-off search (see the explain path).
+    if (state.enabled && state.hintMode !== 'none') maybeAnalyze(view);
 
-    // Arrows (independent of the bar's text so a board re-render can't strand them).
+    // Board overlay — arrows in 'full', corner dots in 'pieces', nothing in
+    // 'none'. Kept independent of the bar's text so a board re-render can't
+    // strand it.
     const haveEngine = engineState.status === 'done' && engineState.sig === curSig(view) && engineState.result;
-    const arrows = state.enabled ? computeArrows(view, haveEngine) : [];
-    const arrowSig = (isFlipped() ? 'f|' : 'n|') + view.fen + '|' +
-      arrows.map((a) => a.color + a.uci).join('|');
+    const arrows = (state.enabled && state.hintMode === 'full') ? computeArrows(view, haveEngine) : [];
+    const dots = (state.enabled && state.hintMode === 'pieces') ? computePieceHints(view, haveEngine) : [];
+    const arrowSig = (isFlipped() ? 'f|' : 'n|') + view.fen + '|A' +
+      arrows.map((a) => a.color + a.uci).join('|') + '|D' +
+      dots.map((d) => d.color + d.square).join('|');
     if (arrowSig !== lastArrowSig || !document.getElementById(ARROW_ID)) {
-      drawArrows(arrows);
+      drawOverlay(arrows, dots);
       lastArrowSig = arrowSig;
     }
 
     const showPanel = state.enabled;
     panel.style.display = showPanel ? '' : 'none';
 
-    const sig = [ctx, state.enabled, state.panelMin, showPanel, state.openingId || 'auto',
+    const sig = [ctx, state.enabled, state.hintMode, state.panelMin, showPanel, state.openingId || 'auto',
       state.depth, view.fen, view.synced, engineState.status, engineState.sig, !!OPENINGS].join('|');
     if (sig === lastSig) return;
     lastSig = sig;
@@ -1003,10 +1118,39 @@
 
   function bindPanel(el, view) {
     el.querySelector('[data-act="explain"]')?.addEventListener('click', () => {
-      const haveEngine = engineState.status === 'done' && engineState.sig === curSig(view) && engineState.result;
-      if (!haveEngine) return;
-      const data = buildExplainInput(engineState.result);
-      if (data) requestExplain(data);
+      const sig = curSig(view);
+      const haveEngine = engineState.status === 'done' && engineState.sig === sig && engineState.result;
+      if (haveEngine) {
+        const data = buildExplainInput(engineState.result);
+        if (data) requestExplain(data);
+        return;
+      }
+      // 'none' mode: no analysis is running. Start a one-off search now and let
+      // runEngine fire the explanation when it lands.
+      if (state.hintMode === 'none' && engineAvailable() && !engineDead) {
+        explainAfterAnalyze = sig;
+        lastSig = '';
+        maybeAnalyze(view);
+        render(detectContext());
+      }
+    });
+
+    el.querySelectorAll('[data-cc-mode]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const mode = btn.getAttribute('data-cc-mode');
+        if (!HINT_MODES.includes(mode) || mode === state.hintMode) return;
+        const prev = state.hintMode;
+        state.hintMode = mode;
+        save();
+        explainAfterAnalyze = null; // drop any pending lazy-explain intent
+        // Coming out of 'none', any cached result is main-line only (the lazy
+        // Explain search skips the reply/review pass), so force a fresh full
+        // analysis. pieces↔full share the same analysis — no reset needed.
+        if (prev === 'none') engineState.sig = null;
+        if (mode === 'none') clearArrows();
+        lastSig = '';
+        render(detectContext());
+      });
     });
 
     el.querySelector('[data-act="panelmin"]')?.addEventListener('click', () => {
@@ -1054,8 +1198,8 @@
   function save() {
     try {
       chrome.storage.local.set({
-        ccEnabled: state.enabled, ccDepth: state.depth, ccOpening: state.openingId,
-        ccPanelMin: state.panelMin, ccArrows: state.arrows
+        ccEnabled: state.enabled, ccHintMode: state.hintMode, ccDepth: state.depth,
+        ccOpening: state.openingId, ccPanelMin: state.panelMin, ccArrows: state.arrows
       });
     } catch {}
   }
@@ -1087,8 +1231,9 @@
   }
 
   try {
-    chrome.storage.local.get(['ccEnabled', 'ccDepth', 'ccOpening', 'ccPanelMin', 'ccArrows', 'ccLanguage'], (o) => {
+    chrome.storage.local.get(['ccEnabled', 'ccHintMode', 'ccDepth', 'ccOpening', 'ccPanelMin', 'ccArrows', 'ccLanguage'], (o) => {
       state.enabled = o.ccEnabled !== false;
+      state.hintMode = HINT_MODES.includes(o.ccHintMode) ? o.ccHintMode : 'full';
       state.depth = Math.max(6, Math.min(22, o.ccDepth || 14));
       state.openingId = o.ccOpening || null;
       state.panelMin = !!o.ccPanelMin;

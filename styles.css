@@ -239,6 +239,37 @@
 .cc-pbody .cc-select { flex: 1 1 auto; max-width: none; width: 100%; }
 .cc-pbody .cc-depth { font-size: 12px; }
 .cc-pbody .cc-depth input[type="range"] { flex: 1; width: auto; }
+
+/* Three-way display switch: a segmented control, least → most verbose. */
+.cc-mode-row { display: flex; align-items: center; gap: 8px; }
+.cc-mode-label { flex: 0 0 auto; font-size: 12px; color: #bdbbb7; }
+.cc-modes {
+  flex: 1;
+  display: flex;
+  padding: 2px;
+  gap: 2px;
+  background: #1f1e1c;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 7px;
+}
+.cc-mode-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 4px 2px;
+  background: transparent;
+  color: #bdbbb7;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 0.12s, color 0.12s;
+}
+.cc-mode-btn:hover { color: #e8e6e3; }
+.cc-mode-btn.is-active { background: rgba(118, 153, 0, 0.9); color: #fff; }
 .cc-results { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
 .cc-results:empty { display: none; }
 /* One line per side: a white/black dot (à la Lichess) then that side's moves,
