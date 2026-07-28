@@ -13,6 +13,17 @@ enable it, the AI explanations.
 
 The whole UI is **bilingual — English and Tiếng Việt** (see *Language* below).
 
+## Why Chess Coach?
+
+Unlike traditional engine overlays that simply show the best move, Chess Coach is
+designed to *teach* chess. Instead of only answering "What is the best move?", it
+also explains:
+
+- **Why** the move works
+- **What both sides are trying to achieve**
+- **Which** tactical or positional concept is present
+- **How** strong players think in similar positions
+
 ## Install (unpacked)
 
 1. Open `chrome://extensions`
