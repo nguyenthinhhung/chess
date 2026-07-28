@@ -2,9 +2,9 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const {
   pieceName, formatScore, scoreToCp, classify, kingInCheck, moveFacts,
-  explainBest, explainPlayed
+  explainBest, explainPlayed, detectMotifs
 } = require('../explain.js');
-const { createPosition, applySan } = require('../chesscore.js');
+const { createPosition, applySan, fromFen } = require('../chesscore.js');
 
 // Replay SAN from the start and hand back the resulting position.
 function pos(sans) {
@@ -27,6 +27,36 @@ test('formatScore: centipawns, mate, and POV flip', () => {
   assert.equal(formatScore({ type: 'cp', value: 40 }, true), '−0.40'); // flipped
   assert.equal(formatScore({ type: 'mate', value: 3 }), 'M3');
   assert.equal(formatScore({ type: 'mate', value: -2 }), '−M2');
+});
+
+test('detectMotifs: knight move that forks king and rook', () => {
+  // Nd5–c7 lands on c7, attacking the king on e8 (check) and the rook on a8.
+  const p = fromFen('r3k3/8/8/3N4/8/8/8/6K1 w - - 0 1');
+  assert.deepEqual(detectMotifs(p, 'd5c7'), ['motifFork']);
+});
+
+test('detectMotifs: bishop pins a knight against its king', () => {
+  // Bh4–g5: the g5–d8 diagonal runs bishop → Nf6 → (e7) → Kd8, an absolute pin.
+  const p = fromFen('3k4/8/5n2/8/7B/8/8/6K1 w - - 0 1');
+  assert.deepEqual(detectMotifs(p, 'h4g5'), ['motifPin']);
+});
+
+test('detectMotifs: knight stepping off the e-file gives a discovered check', () => {
+  // Ne4–c3 unblocks Re1 onto the Ke8; the knight itself does not hit e8.
+  const p = fromFen('4k3/8/8/8/4N3/8/8/4R1K1 w - - 0 1');
+  assert.deepEqual(detectMotifs(p, 'e4c3'), ['motifDiscoveredCheck']);
+});
+
+test('detectMotifs: knight to d6 checks while unblocking the rook — double check', () => {
+  // Ne4–d6 checks e8 itself AND unblocks Re1, so both pieces give check.
+  const p = fromFen('4k3/8/8/8/4N3/8/8/4R1K1 w - - 0 1');
+  assert.deepEqual(detectMotifs(p, 'e4d6'), ['motifDoubleCheck']);
+});
+
+test('detectMotifs: a quiet developing move has no motif, and castling never throws', () => {
+  assert.deepEqual(detectMotifs(createPosition(), 'e2e4'), []);
+  const castle = fromFen('4k3/8/8/8/8/8/8/4K2R w K - 0 1');
+  assert.deepEqual(detectMotifs(castle, 'e1g1'), []); // king lands on g1, no target — and no crash
 });
 
 test('scoreToCp puts mate far above any normal eval', () => {

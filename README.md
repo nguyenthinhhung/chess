@@ -93,6 +93,13 @@ just played — **Best / Good / Inaccuracy / Mistake / Blunder** (green→red ch
 and shows the move you should have played with its evaluation. No extra engine
 search is spent: it reuses the analysis already in flight.
 
+It also **names the tactical motif** of the engine's best move — fork, pin,
+discovered check, double check — so a blunder reads "🎯 Missed tactic: fork"
+and finding the best move reads "🎯 Tactic: fork". Detection is pure geometry
+(no AI) and deliberately conservative: it runs on the engine-vetted best move
+and stays silent unless the pattern is unmistakable, since a wrong label teaches
+the wrong thing.
+
 ### AI "Explain this move"
 
 With an AI provider configured, an **✨ Explain this move** button turns one

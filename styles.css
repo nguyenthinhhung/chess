@@ -330,6 +330,18 @@
   white-space: nowrap;
 }
 
+/* Tactical motif chips in the move review (fork, pin, discovered check…). */
+.cc-motifs { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.cc-motifs b { color: #e8e6e3; margin-right: 2px; }
+.cc-motif-chip {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  color: #e6c260;
+  background: rgba(224, 160, 0, 0.16);
+  white-space: nowrap;
+}
+
 /* The principal variation, one narrated move per line. */
 .cc-lsteps { display: flex; flex-direction: column; gap: 2px; margin-top: 2px; }
 .cc-lstep { padding-left: 10px; text-indent: -10px; color: #cfcdc9; }

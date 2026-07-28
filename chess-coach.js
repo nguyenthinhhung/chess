@@ -628,11 +628,15 @@
               // Deterministic (no LLM, no extra search) reason the engine likes its
               // own top move — Neutral Hint reveals this only after the move is made.
               const bestWhy = Explain.explainBest(parentPos, pBest.move, pr.score, null, state.lang);
+              // Tactical motif of the engine's OWN best move — reliable precisely
+              // because the search vetted the move, so a detected fork/pin is
+              // sound. Names the tactic you found (or, on a mistake, missed).
+              const motifs = Explain.detectMotifs ? Explain.detectMotifs(parentPos, pBest.move) : [];
               engineState.result.review = {
                 ...verdict, // { key, label, text }
                 playedUci, playedSan: Explain.sanOf(parentPos, playedUci),
                 bestUci: pBest.move, bestSan: Explain.sanOf(parentPos, pBest.move),
-                bestScore: pr.score, bestWhy
+                bestScore: pr.score, bestWhy, motifs
               };
               recordHintOutcome(verdict.key, parentFen);
               lastSig = '';
@@ -1137,6 +1141,19 @@
       chips += vline + '</div>';
       if (state.suggestionStyle === 'neutral' && rv.bestSan) {
         chips += `<div class="cc-erow"><b>${esc(t('enginePreferredLabel'))}</b> ${esc(rv.bestSan)}${rv.bestWhy ? ' — ' + esc(rv.bestWhy) : ''}</div>`;
+      }
+      // Tactical motif of the engine's best move. Only surfaced when it teaches
+      // something: you MISSED it (the move was an inaccuracy or worse) or you
+      // FOUND it (you actually played that best move). A good-but-not-best move
+      // says nothing here — no nagging when you didn't blunder.
+      if (rv.motifs && rv.motifs.length) {
+        const found = rv.playedUci === rv.bestUci;
+        const missed = rv.key !== 'best' && rv.key !== 'good';
+        if (found || missed) {
+          const label = found ? t('motifFoundLabel') : t('motifMissedLabel');
+          const names = rv.motifs.map((m) => `<span class="cc-motif-chip">${esc(t(m))}</span>`).join('');
+          chips += `<div class="cc-prow cc-motifs"><b>${esc(label)}</b> ${names}</div>`;
+        }
       }
       // The opponent's candidate replies — Display level applies here too, same
       // as the forward view below, so the board's dots and this text agree.

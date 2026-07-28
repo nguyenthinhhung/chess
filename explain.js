@@ -172,10 +172,115 @@ function sanOf(pos, uci) {
   return _ecc.applyUci(clone, uci) || uci || '';
 }
 
+// Ray directions per sliding piece, for pin geometry (mirrors chesscore's
+// SLIDERS, which it doesn't export).
+const _RAY = {
+  b: [[1, 1], [1, -1], [-1, 1], [-1, -1]],
+  r: [[1, 0], [-1, 0], [0, 1], [0, -1]],
+  q: [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]
+};
+const _mFileOf = (i) => i % 8;
+const _mRankOf = (i) => (i / 8) | 0;
+const _mIsEnemy = (p, moverWhite) => p !== '.' && (p === p.toUpperCase()) !== moverWhite;
+
+// Is `sq` defended by any piece of `defenderWhite`'s colour on this board?
+function _defendedBy(board, sq, defenderWhite) {
+  for (let i = 0; i < 64; i++) {
+    const p = board[i];
+    if (p === '.' || i === sq) continue;
+    if ((p === p.toUpperCase()) !== defenderWhite) continue;
+    if (_attacks(board, i, sq)) return true;
+  }
+  return false;
+}
+
+// Name the tactical motif(s) a move CREATES, read from concrete geometry on the
+// board AFTER it is played — never a guess. Deliberately conservative: a wrong
+// label teaches the wrong thing, so it fires only on high-confidence patterns
+// and prefers silence otherwise. Crucially this is meant to run on the ENGINE'S
+// BEST move (which the search has already vetted as sound), so a "fork" can't be
+// a hung-piece false positive the way it could on an arbitrary move.
+//   Motifs: fork, absolute pin (against the king), discovered check, double check.
+// Returns i18n keys in priority order, at most two.
+function detectMotifs(pos, uci) {
+  if (!pos || typeof uci !== 'string' || uci.length < 4) return [];
+  const clone = clonePos(pos);
+  if (!_ecc.applyUci(clone, uci)) return [];
+  const board = clone.board;
+  const moverWhite = pos.turn === 'w';
+  const enemyColor = moverWhite ? 'b' : 'w';
+  const to = _ecc.sqIndex(uci.slice(2, 4));
+  const moved = board[to];
+  if (!moved || moved === '.') return [];       // e.g. castling — no single landing piece to reason about
+  const movedType = moved.toLowerCase();
+  const movedVal = PIECE_VALUE[movedType] || 0;
+  const motifs = [];
+
+  // Discovered / double check: the enemy king is in check after the move. Any
+  // checker is either the moved piece or one it un-blocked (before the move the
+  // enemy king could not have been in check). If the moved piece is NOT among
+  // the checkers, the check was discovered; if it is AND another piece also
+  // checks, it's a double check.
+  if (_kingInCheck(board, enemyColor)) {
+    const kingSq = board.indexOf(enemyColor === 'w' ? 'K' : 'k');
+    let movedChecks = false, otherChecks = false;
+    for (let i = 0; i < 64; i++) {
+      const p = board[i];
+      if (p === '.' || (p === p.toUpperCase()) !== moverWhite) continue;
+      if (!_attacks(board, i, kingSq)) continue;
+      if (i === to) movedChecks = true; else otherChecks = true;
+    }
+    if (movedChecks && otherChecks) motifs.push('motifDoubleCheck');
+    else if (!movedChecks && otherChecks) motifs.push('motifDiscoveredCheck');
+  }
+
+  // Fork: the moved piece attacks two or more winnable enemy targets — the king
+  // (a check leg), or a minor-or-better piece that is either worth more than the
+  // forker or undefended. Pawns are ignored so a routine pawn push isn't a "fork".
+  let forkTargets = 0;
+  for (let i = 0; i < 64; i++) {
+    const p = board[i];
+    if (!_mIsEnemy(p, moverWhite) || !_attacks(board, to, i)) continue;
+    const t = p.toLowerCase();
+    if (t === 'k') { forkTargets++; continue; }
+    const val = PIECE_VALUE[t] || 0;
+    if (val < 3) continue;
+    if (val > movedVal || !_defendedBy(board, i, !moverWhite)) forkTargets++;
+  }
+  if (forkTargets >= 2) motifs.push('motifFork');
+
+  // Absolute pin: from the moved slider, along one of its ray directions, the
+  // first piece is an enemy non-king and the next piece on that ray is the enemy
+  // king — so the shield cannot move without exposing its king.
+  if (_RAY[movedType]) {
+    const kingChar = enemyColor === 'w' ? 'K' : 'k';
+    for (const [ox, oy] of _RAY[movedType]) {
+      let f = _mFileOf(to) + ox, r = _mRankOf(to) + oy, shield = -1;
+      while (f >= 0 && f < 8 && r >= 0 && r < 8) {
+        const i = r * 8 + f;
+        const p = board[i];
+        if (p !== '.') {
+          if (shield < 0) {
+            if (!_mIsEnemy(p, moverWhite) || p.toLowerCase() === 'k') break;
+            shield = i;
+          } else {
+            if (p === kingChar) motifs.push('motifPin');
+            break;
+          }
+        }
+        f += ox; r += oy;
+      }
+      if (motifs.includes('motifPin')) break;
+    }
+  }
+
+  return [...new Set(motifs)].slice(0, 2);
+}
+
 const _eExports = {
   pieceName, formatScore, scoreToCp, classify,
   attacks: _attacks, kingInCheck: _kingInCheck,
-  moveFacts, explainBest, explainPlayed, sanOf
+  moveFacts, explainBest, explainPlayed, sanOf, detectMotifs
 };
 if (_eIsNode) {
   module.exports = _eExports;
