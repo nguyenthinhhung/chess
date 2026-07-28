@@ -140,14 +140,23 @@ test('buildExplainPrompt reframes when the opponent is to move', () => {
   // PV move 2 is the user's reply here — it must not be mislabeled as the opponent's.
   assert.match(user, /Your best reply: Nc3/);
   assert.doesNotMatch(user, /Opponent's best reply/);
+  // The engine score (+0.30 for the side to move = the opponent) must be flipped
+  // to the coached player's POV, or the model reads it backwards and calls the
+  // opponent's advantage "you are winning" — the exact inversion reported.
+  assert.match(user, /Evaluation: -0\.30 \(from your point of view/);
+  assert.match(user, /Who stands better \(from your point of view\): You are slightly worse/);
+  assert.match(system, /All evaluations here are given from YOUR point of view/);
 });
 
 test('buildExplainPrompt keeps the you-to-move framing when the coached side moves', () => {
   // Coaching Black with Black to move → the engine's best move IS the user's;
-  // none of the opponent-to-move reframing should leak in.
+  // none of the opponent-to-move reframing should leak in, and the eval keeps
+  // its sign (the side to move IS you), reading +0.30 = you are slightly better.
   const { system, user } = buildExplainPrompt({ ...BASE, userSide: 'b' });
   assert.doesNotMatch(system, /the engine's best move is THEIRS/);
   assert.match(user, /Opponent's best reply: Nc3/);
+  assert.match(user, /Evaluation: \+0\.30 \(from your point of view/);
+  assert.match(user, /Who stands better \(from your point of view\): You are slightly better/);
 });
 
 test('buildExplainPrompt review (played move known): compares best vs played', () => {

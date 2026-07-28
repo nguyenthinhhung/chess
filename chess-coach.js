@@ -185,6 +185,12 @@
   // there — consumed (and removed) once that move is graded, see
   // recordHintOutcome. Manual "Show Hint" always works regardless of interval.
   const manualHintFens = new Set();
+  // FENs the user escalated from the reduced "Hint" detail (a bare dot) to Full
+  // arrows + eval, via the "Show full arrows" button. Per-position, so it never
+  // changes the standing Suggestion display level — the next position falls back
+  // to the configured level. A separate step from Show Hint so the disclosure
+  // ladder stays: nothing → dot → full arrows → Explain.
+  const manualFullFens = new Set();
   // Rolling window of the user's last ~50 graded moves, for the Adaptive
   // recommendation heuristic only. Session-scoped (resets on reload/navigation)
   // and never persisted — this is a lightweight heuristic, not a stats engine.
@@ -273,6 +279,9 @@
   // once manually revealed — Show Hint in Hidden mode surfaces one lazy search
   // at Hint-level detail, not a jump straight to Full (confirmed design).
   function isHintLevelDisplay(view) {
+    // "Show full arrows" escalates exactly this position all the way to Full,
+    // overriding the reduced detail it would otherwise render at.
+    if (manualFullFens.has(view.fen)) return false;
     if (state.displayLevel === 'hint') return true;
     return state.displayLevel === 'hidden' && manualHintFens.has(view.fen);
   }
@@ -1127,7 +1136,8 @@
       // The opponent's candidate replies — Display level applies here too, same
       // as the forward view below, so the board's dots and this text agree.
       if (isHintLevelDisplay(view)) {
-        chips += `<div class="cc-erow">${esc(t('hintDotMsg'))}</div>`;
+        chips += `<div class="cc-hint-hidden"><span class="cc-erow">${esc(t('hintDotMsg'))}</span>
+          <button class="cc-explain-btn" data-act="showfull">${esc(t('showFull'))}</button></div>`;
       } else {
         const neutralAfter = neutralCandidates(res);
         const afterOpts = {};
@@ -1142,7 +1152,8 @@
     // regardless of whose turn is shown (see computeArrows) — the board shows
     // a dot on the square to move; no move text, eval, or notation here.
     if (isHintLevelDisplay(view)) {
-      return chips + `<div class="cc-erow">${esc(t('hintDotMsg'))}</div>`;
+      return chips + `<div class="cc-hint-hidden"><span class="cc-erow">${esc(t('hintDotMsg'))}</span>
+        <button class="cc-explain-btn" data-act="showfull">${esc(t('showFull'))}</button></div>`;
     }
 
     // Forward view: one line per side, White on top. The side to move gets its
@@ -1474,6 +1485,15 @@
     // (see recordHintOutcome) once this move is graded.
     el.querySelector('[data-act="showhint"]')?.addEventListener('click', () => {
       manualHintFens.add(view.fen);
+      lastSig = '';
+      render(detectContext());
+    });
+
+    // "Show full arrows" — escalate this one position from the reduced Hint dot
+    // to Full detail (arrows + eval + notation). The search already ran, so this
+    // only changes how the existing result is rendered; no extra engine work.
+    el.querySelector('[data-act="showfull"]')?.addEventListener('click', () => {
+      manualFullFens.add(view.fen);
       lastSig = '';
       render(detectContext());
     });

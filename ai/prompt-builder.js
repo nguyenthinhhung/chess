@@ -49,6 +49,32 @@ function fmtEval(score) {
   return (cp >= 0 ? '+' : '') + cp.toFixed(2);
 }
 
+// The engine reports every score relative to the SIDE TO MOVE. To coach in the
+// second person we re-express scores from the COACHED player's point of view,
+// so a positive number always means "you are better". When the coached side is
+// not the side to move, that is a negation. Without this the model had to infer
+// the perspective from the raw sign and routinely got it backwards — telling
+// the user "you are winning" when the opponent was, and vice versa.
+function orientToCoached(score, oppToMove) {
+  if (!score || !oppToMove) return score;
+  return { type: score.type, value: -score.value };
+}
+
+// A deterministic who-stands-better verdict in the coached player's voice,
+// handed to the model so it never has to derive "am I better?" from a raw
+// number (the step it kept inverting). `score` is already oriented to the
+// coached player, so positive = you. The vocabulary matches the phrases the
+// whyBest field is asked to open with.
+function standingText(score) {
+  if (!score) return null;
+  if (score.type === 'mate') return score.value >= 0 ? 'You are winning (a forced mate)' : 'You are losing (getting mated)';
+  const cp = score.value, a = Math.abs(cp);
+  if (a < 30) return 'Roughly equal';
+  if (a < 90) return cp > 0 ? 'You are slightly better' : 'You are slightly worse';
+  if (a < 250) return cp > 0 ? 'You are better' : 'You are worse';
+  return cp > 0 ? 'You are winning' : 'You are losing';
+}
+
 // Cost control (plan.md Phase 7): skip calling Gemini when the analysis is too
 // shallow to trust, or the position is already decided (mate found) — the
 // engine's own numbers say everything needed, an LLM gloss adds nothing.
@@ -65,9 +91,10 @@ function shouldSkipExplain(data) {
 // coached-side perspective + opponentReply field added in v4, the strategy-first
 // 3-field schema in v5, the computed position-facts block in v6, the
 // PV-anchoring + principle field in v7, the opponent-to-move perspective flip
-// in v8), so stale explanations aren't served from chrome.storage.local after
-// an update.
-const EXPLAIN_CACHE_VERSION = 8;
+// in v8, the coached-player eval orientation + deterministic standing line in
+// v9), so stale explanations aren't served from chrome.storage.local after an
+// update.
+const EXPLAIN_CACHE_VERSION = 9;
 
 // The strategic vocabulary the "plan" field draws from. Each theme carries a
 // `when(facts)` predicate so we offer the model only the ideas THIS position
@@ -127,8 +154,21 @@ function sideToMoveName(fen) {
 const sideName = (s) => (s === 'b' ? 'Black' : 'White');
 
 function buildExplainPrompt(data) {
+  // Whose move is it, relative to the coached player? The analyzed position is
+  // very often the OPPONENT to move — the live head right after the user played,
+  // or a browsed opponent ply. When it is, the engine's "best move" is the
+  // OPPONENT's, the principal variation's 2nd move is the user's own reply, AND
+  // every engine score is relative to the opponent (so its raw sign is the
+  // opposite of "good for you"). If the prompt ignores this, the model both
+  // narrates the opponent's move as the user's and reads the eval backwards —
+  // the "mixes up me and the opponent" the user reported.
+  const oppToMove = !!data.userSide && sideToMoveName(data.fen) !== sideName(data.userSide);
+  // Every eval below is oriented to the coached player: positive = you better.
+  const evalForYou = orientToCoached(data.eval, oppToMove);
+  const standing = data.userSide ? standingText(evalForYou) : null;
+
   const topMoves = (data.topMoves || [])
-    .map((m, i) => `${i + 1}. ${m.san || m.move} (${fmtEval(m.eval)})`)
+    .map((m, i) => `${i + 1}. ${m.san || m.move} (${fmtEval(orientToCoached(m.eval, oppToMove))})`)
     .join('\n');
   const pvArr = (data.pvSan && data.pvSan.length ? data.pvSan : data.pv || []);
   const pv = pvArr.join(' ');
@@ -143,16 +183,6 @@ function buildExplainPrompt(data) {
     : null;
   const hasPlayed = !!playedLine;
 
-  // Whose move is it, relative to the coached player? The analyzed position is
-  // very often the OPPONENT to move — the live head right after the user played,
-  // or a browsed opponent ply. When it is, the engine's "best move" is the
-  // OPPONENT's, and the principal variation's 2nd move is the user's own reply.
-  // If the field instructions still assume "you are to move" (as they did
-  // through v7), the model narrates the opponent's move as if it were the
-  // user's, which reads as the coach mixing up "you" and "the opponent". So the
-  // three move-oriented fields flip their framing when the opponent is to move.
-  const oppToMove = !!data.userSide && sideToMoveName(data.fen) !== sideName(data.userSide);
-
   // Structural facts computed from the board (material, king safety, files, weak
   // pawns, outposts) — the grounding the "plan" field leans on, and the basis
   // for offering only the strategic themes this position actually supports.
@@ -165,11 +195,11 @@ function buildExplainPrompt(data) {
   // opponent is to move these must NOT present the opponent's move as the user's.
   const whyBestInstr = hasPlayed
     ? (oppToMove
-      ? '"whyBest": open with a three-word read of who stands better ("You are winning/better/slightly better", "Roughly equal", "You are worse"), then in one sentence — the side to move here is the OPPONENT, so the engine\'s best move is THEIRS, not yours — say what the opponent\'s strongest move threatens and how the move they actually played compares (did it create more or fewer problems for you, and why). Never present the opponent\'s move as yours to play.'
-      : '"whyBest": open with a three-word read of who stands better ("You are winning/better/slightly better", "Roughly equal", "You are worse"), then in one sentence what the engine\'s best move does and how the move actually played compares (better/worse and why); if the played move falls outside the candidate list, say so rather than inventing a number.')
+      ? '"whyBest": open by restating the "Who stands better" assessment given below (it is already from your point of view — do NOT re-derive who is better from the raw eval sign or from which color is to move), then in one sentence — the side to move here is the OPPONENT, so the engine\'s best move is THEIRS, not yours — say what the opponent\'s strongest move threatens and how the move they actually played compares (did it create more or fewer problems for you, and why). Never present the opponent\'s move as yours to play.'
+      : '"whyBest": open by restating the "Who stands better" assessment given below (it is already from your point of view — do NOT re-derive who is better from the raw eval sign or from which color is to move), then in one sentence what the engine\'s best move does and how the move actually played compares (better/worse and why); if the played move falls outside the candidate list, say so rather than inventing a number.')
     : (oppToMove
-      ? '"whyBest": open with a three-word read of who stands better ("You are winning/better/slightly better", "Roughly equal", "You are worse"), then in one sentence — the side to move here is the OPPONENT, so the engine\'s best move is THEIRS, not yours — what that move threatens and what it means for you. Never present the opponent\'s move as yours to play.'
-      : '"whyBest": open with a three-word read of who stands better ("You are winning/better/slightly better", "Roughly equal", "You are worse"), then in one sentence what the best move concretely does (the piece, any capture or check) and the idea behind it.');
+      ? '"whyBest": open by restating the "Who stands better" assessment given below (it is already from your point of view — do NOT re-derive who is better from the raw eval sign or from which color is to move), then in one sentence — the side to move here is the OPPONENT, so the engine\'s best move is THEIRS, not yours — what that move threatens and what it means for you. Never present the opponent\'s move as yours to play.'
+      : '"whyBest": open by restating the "Who stands better" assessment given below (it is already from your point of view — do NOT re-derive who is better from the raw eval sign or from which color is to move), then in one sentence what the best move concretely does (the piece, any capture or check) and the idea behind it.');
 
   const planInstr = (oppToMove
     ? '"plan": a concrete plan for YOU (the coached side) to meet what the opponent is doing, over the next 5–8 moves, chosen to fit the Position facts.'
@@ -203,6 +233,9 @@ function buildExplainPrompt(data) {
     'Stay anchored: keep consistent with the evaluation and treat the engine\'s best move as correct; explain the pawn structure and plans, but do NOT invent a forced tactic, mating net, or winning line the principal variation does not show.',
     'The principal variation is evidence: the engine\'s own next moves reveal the plan\'s direction and the opponent\'s best reply — do not propose a plan or threat that contradicts it.',
     'The "Side to move" field is ground truth — never say the other color is moving.',
+    data.userSide
+      ? 'All evaluations here are given from YOUR point of view (the coached player): a positive number means you are better, a negative number means the opponent is better. Do not re-interpret the sign by color or by who is to move. Base every "who is better" statement on the "Who stands better" line and these signs.'
+      : null,
     'Moves are given in SAN; the best move also names exactly which piece moves and what it captures. Use those identities verbatim — never re-derive a piece from the FEN or rename one (e.g. knight vs bishop).',
     'A "Position facts" block, computed directly from the board, gives the material, game phase, where each king castled, the open/half-open files, the weak pawns, and the outpost squares. Treat it as ground truth: build your plan on those facts and do NOT contradict them or re-read the structure from the FEN yourself. If it lists no weakness of some kind, do not claim one.',
     'Fill the four fields exactly:',
@@ -219,17 +252,20 @@ function buildExplainPrompt(data) {
     `Position (FEN): ${data.fen}`,
     `Side to move: ${sideToMoveName(data.fen)}`,
     data.userSide ? `Coached player: ${sideName(data.userSide)}` : null,
+    standing ? `Who stands better (from your point of view): ${standing}` : null,
     factsText ? `Position facts (computed from the board — ground truth):\n${factsText}` : null,
     `Best move: ${bestLine}`,
     playedLine ? `Move actually played from this position: ${playedLine}` : null,
-    `Evaluation: ${fmtEval(data.eval)}`,
+    `Evaluation: ${fmtEval(evalForYou)}${data.userSide ? ' (from your point of view: positive = you are better)' : ''}`,
     `Principal variation: ${pv}`,
     // Spell out PV move 2 so the model grounds "opponentReply" on it instead of
     // guessing — weaker models mis-count PV tokens. Only meaningful live (in
     // review, the played move has its own line). Whose reply it is depends on
     // the side to move: when the opponent is to move, PV move 2 is the user's.
     !hasPlayed && replySan ? `${oppToMove ? 'Your best reply' : "Opponent's best reply"}: ${replySan}` : null,
-    topMoves ? `Candidate moves (best first):\n${topMoves}` : null
+    topMoves
+      ? `${oppToMove ? "Opponent's candidate moves (their strongest first)" : 'Candidate moves (best first)'}${data.userSide ? ', scored from your point of view' : ''}:\n${topMoves}`
+      : null
   ].filter(Boolean).join('\n');
 
   return { system, user };
