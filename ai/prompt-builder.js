@@ -75,6 +75,28 @@ function standingText(score) {
   return cp > 0 ? 'You are winning' : 'You are losing';
 }
 
+// The student's self-declared level (a manual setting). The engine analysis and
+// the position facts are identical at every level — what changes is who the
+// explanation is written FOR: its vocabulary and the depth of the ideas. A
+// 700-player wants "don't hang the knight"; a 1800-player wants "prophylaxis
+// against ...b5". Without this the prompt pitched everything at a fixed ~1200.
+const SKILL_LEVELS = {
+  beginner: {
+    audience: 'a beginner (~600–900 Elo)',
+    register: 'Use only everyday words — avoid chess jargon. If an idea needs a term (outpost, fork, IQP…), do not name it; describe it plainly ("a safe square for your knight", "a move that attacks two things at once"). Keep it concrete and immediate: do not hang pieces, take free material, keep your king safe, develop your pieces and castle.'
+  },
+  intermediate: {
+    audience: 'an intermediate club player (~1000–1400 Elo)',
+    register: 'Write in plain sentences, and when you use a chess term (outpost, minority attack, IQP…) add in a few words what it means on THIS board.'
+  },
+  advanced: {
+    audience: 'an advanced player (~1500–2000 Elo)',
+    register: 'You may use standard chess terminology (prophylaxis, minority attack, weak-square complex, IQP, imbalance) without defining it, and go a level deeper: long-term imbalances, prophylactic ideas, and the pawn breaks that define the plan.'
+  }
+};
+const DEFAULT_SKILL = 'intermediate';
+const skillConfig = (skill) => SKILL_LEVELS[skill] || SKILL_LEVELS[DEFAULT_SKILL];
+
 // Cost control (plan.md Phase 7): skip calling Gemini when the analysis is too
 // shallow to trust, or the position is already decided (mate found) — the
 // engine's own numbers say everything needed, an LLM gloss adds nothing.
@@ -92,9 +114,9 @@ function shouldSkipExplain(data) {
 // 3-field schema in v5, the computed position-facts block in v6, the
 // PV-anchoring + principle field in v7, the opponent-to-move perspective flip
 // in v8, the coached-player eval orientation + deterministic standing line in
-// v9), so stale explanations aren't served from chrome.storage.local after an
-// update.
-const EXPLAIN_CACHE_VERSION = 9;
+// v9, the per-skill-level register in v10), so stale explanations aren't served
+// from chrome.storage.local after an update.
+const EXPLAIN_CACHE_VERSION = 10;
 
 // The strategic vocabulary the "plan" field draws from. Each theme carries a
 // `when(facts)` predicate so we offer the model only the ideas THIS position
@@ -140,7 +162,7 @@ function selectThemes(facts) {
 // review with one), so they key separately too.
 function cacheKeyFor(data) {
   return `v${EXPLAIN_CACHE_VERSION}|${data.fen}|${data.bestMove}|${data.depth || 0}|${data.lang || 'en'}` +
-    `|${data.userSide || ''}|${data.playedMove || ''}`;
+    `|${data.userSide || ''}|${data.playedMove || ''}|${data.skill || ''}`;
 }
 
 // The FEN's active-color field, spelled out — handed to Gemini as an explicit
@@ -223,13 +245,14 @@ function buildExplainPrompt(data) {
   // about the pawn structure and plans (that is the point), but stays anchored:
   // the engine's move/eval are the ceiling, and it must not fabricate forced
   // tactics the search didn't show.
+  const skill = skillConfig(data.skill);
   const system = [
-    'You are a professional chess coach turning one engine analysis into a strategic lesson for a ~1200-Elo player.',
+    `You are a professional chess coach turning one engine analysis into a strategic lesson for ${skill.audience}.`,
     data.userSide
       ? `You are coaching the ${sideName(data.userSide)} player — "you" always means that player. When it is the opponent to move, explain what the opponent is trying to do and how the coached player should prepare; never advise the opponent.`
       : null,
     'The evaluation, the candidate moves with their scores, and the principal variation are ALREADY shown to the player as numbers. Do NOT restate them. Your job is the human plan behind the position — the ideas the numbers do not spell out.',
-    'Write for that level: plain sentences, and when you use a chess term (outpost, minority attack, IQP…) add in a few words what it means on THIS board. Name concrete squares and pieces.',
+    `Pitch it for that level. ${skill.register} Name concrete squares and pieces.`,
     'Stay anchored: keep consistent with the evaluation and treat the engine\'s best move as correct; explain the pawn structure and plans, but do NOT invent a forced tactic, mating net, or winning line the principal variation does not show.',
     'The principal variation is evidence: the engine\'s own next moves reveal the plan\'s direction and the opponent\'s best reply — do not propose a plan or threat that contradicts it.',
     'The "Side to move" field is ground truth — never say the other color is moving.',

@@ -145,6 +145,10 @@
   // engine-equivalent candidates instead. neutralThreshold: centipawns.
   const state = {
     enabled: true, depth: 14, openingId: null, panelMin: false, arrows: 3, lang: 'en',
+    // skill: who the AI explanations are written for — 'beginner' | 'intermediate'
+    // | 'advanced'. A profile setting on the options page (like lang); the same
+    // engine analysis is pitched at a different vocabulary/depth per level.
+    skill: 'intermediate',
     hintInterval: '1', adaptiveBase: '2', suggestionStyle: 'best',
     neutralThreshold: NEUTRAL_THRESHOLD_DEFAULT,
     settingsOpen: false, // advanced settings (depth/arrows/threshold) collapsed by default
@@ -754,7 +758,8 @@
       pvSan: lineToSan(pos, best.pv || []).slice(0, 8),
       topMoves: res.lines.slice(0, 4).filter((l) => l.move)
         .map((l) => ({ move: l.move, san: sanChecked(pos, l.move), eval: l.score })),
-      lang: state.lang
+      lang: state.lang,
+      skill: state.skill
     };
   }
 
@@ -1190,6 +1195,34 @@
     </button>`;
   }
 
+  // A compact, deterministic "concept spotlight" for the position on screen,
+  // drawn from the SAME structural facts (ai/position-facts.js) that ground the
+  // AI plan — but named plainly and shown to the learner directly. It puts a
+  // label on the ideas the arrows only hint at (open files, weak/passed pawns,
+  // outposts, opposite-side castling), so each position doubles as a lesson in
+  // what to look for. No engine or AI call — pure board reading, so it's cheap
+  // and always right. Capped at 4 so it stays a spotlight, not a wall.
+  function positionThemes(fen) {
+    const PF = globalThis.ChessPositionFacts;
+    if (!PF || !fen) return [];
+    let f;
+    try { f = PF.describePosition(fen); } catch { return []; }
+    const out = [];
+    const push = (label) => { if (label && out.length < 4 && !out.includes(label)) out.push(label); };
+    // Priority order = pedagogical value: the sharp, nameable ideas first.
+    const wk = f.kings.white, bk = f.kings.black;
+    if (wk && bk && wk.side !== 'center' && bk.side !== 'center' && wk.side !== bk.side) {
+      push(t('themeOppositeCastling'));
+    }
+    for (const side of ['white', 'black']) for (const sq of f.pawns[side].isolated) push(t('themeIsolated', sq));
+    for (const side of ['white', 'black']) for (const sq of f.outposts[side]) push(t('themeOutpost', sq));
+    for (const side of ['white', 'black']) for (const sq of f.pawns[side].passed) push(t('themePassed', sq));
+    for (const file of f.openFiles) push(t('themeOpenFile', file));
+    for (const side of ['white', 'black']) for (const fl of f.pawns[side].doubled) push(t('themeDoubled', fl));
+    for (const side of ['white', 'black']) for (const sq of f.pawns[side].backward) push(t('themeBackward', sq));
+    return out;
+  }
+
   // Bottom-right of the screen: settings + results, with a minimize/expand button.
   // Settings split in two: mode switches you'd flip mid-game (suggestion style,
   // hint interval) stay always visible; tuning knobs you set once (depth,
@@ -1249,12 +1282,18 @@
         <input type="range" min="${ARROW_MIN}" max="${ARROW_MAX}" step="1" value="${state.arrows}" data-cc-arrows></label>
       ${neutralSliderHtml}` : '';
 
+    const themes = positionThemes(view.fen);
+    const themesHtml = themes.length
+      ? `<div class="cc-prow cc-themes"><b>${esc(t('themesLabel'))}</b> ${themes.map((x) => `<span class="cc-theme-chip">${esc(x)}</span>`).join('')}</div>`
+      : '';
+
     return header + `<div class="cc-pbody">
       <div class="cc-prow">${openingPicker(userSide)}</div>
       ${quickSettingsHtml}
       ${advancedSettingsHtml}
       ${recommendHtml}
       <div class="cc-prow cc-results">${resultsHtml(view, hintVisible)}</div>
+      ${themesHtml}
       ${explainHtml(view)}
       <div class="cc-prow cc-legend">${legendHtml}</div>
     </div>`;
@@ -1554,7 +1593,7 @@
   }
 
   try {
-    chrome.storage.local.get(['ccEnabled', 'ccDepth', 'ccOpening', 'ccPanelMin', 'ccArrows', 'ccLanguage',
+    chrome.storage.local.get(['ccEnabled', 'ccDepth', 'ccOpening', 'ccPanelMin', 'ccArrows', 'ccLanguage', 'ccSkillLevel',
       'ccHintInterval', 'ccAdaptiveBase', 'ccSuggestionStyle', 'ccNeutralThreshold', 'ccSettingsOpen', 'ccDisplayLevel'], (o) => {
       state.enabled = o.ccEnabled !== false;
       state.depth = Math.max(6, Math.min(22, o.ccDepth || 14));
@@ -1562,6 +1601,7 @@
       state.panelMin = !!o.ccPanelMin;
       state.arrows = Math.max(ARROW_MIN, Math.min(ARROW_MAX, o.ccArrows || 3));
       state.lang = o.ccLanguage === 'vi' ? 'vi' : 'en';
+      state.skill = ['beginner', 'intermediate', 'advanced'].includes(o.ccSkillLevel) ? o.ccSkillLevel : 'intermediate';
       const validIntervals = ADAPTIVE_STEPS.concat(['1', 'manual', 'adaptive']);
       state.hintInterval = validIntervals.includes(o.ccHintInterval) ? o.ccHintInterval : '1';
       state.adaptiveBase = ADAPTIVE_STEPS.includes(o.ccAdaptiveBase) ? o.ccAdaptiveBase : '2';
@@ -1571,11 +1611,20 @@
       state.displayLevel = ['full', 'hint', 'hidden'].includes(o.ccDisplayLevel) ? o.ccDisplayLevel : 'full';
       start();
     });
-    // The language lives on the options page, a separate context — pick up a
-    // change immediately instead of requiring a chess.com page reload.
+    // Language and skill level live on the options page, a separate context —
+    // pick up a change immediately instead of requiring a chess.com page reload.
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== 'local' || !changes.ccLanguage) return;
-      state.lang = changes.ccLanguage.newValue === 'vi' ? 'vi' : 'en';
+      if (area !== 'local') return;
+      if (!changes.ccLanguage && !changes.ccSkillLevel) return;
+      if (changes.ccLanguage) state.lang = changes.ccLanguage.newValue === 'vi' ? 'vi' : 'en';
+      if (changes.ccSkillLevel) {
+        state.skill = ['beginner', 'intermediate', 'advanced'].includes(changes.ccSkillLevel.newValue)
+          ? changes.ccSkillLevel.newValue : 'intermediate';
+        // A cached explanation was written for the old level — drop it so the
+        // panel offers a fresh Explain at the new register (the cache key now
+        // differs anyway; this just clears the stale on-screen result).
+        explainState.key = null; explainState.status = 'idle'; explainState.data = null;
+      }
       lastSig = '';
       render(detectContext());
     });

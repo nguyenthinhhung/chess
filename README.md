@@ -35,6 +35,11 @@ Open the extension icon → **Settings** (the options page):
      "Explain this move" panel (the built-in explanations remain).
 3. **Language** — English or Tiếng Việt. Applies to the coach panel **and** both
    the built-in and AI explanations, live (no reload needed).
+4. **Skill level** — Beginner (~600–900) / Intermediate (~1000–1400) / Advanced
+   (~1500–2000). The engine analysis is identical at every level; only *who the
+   AI explanation is written for* changes — a beginner gets plain "don't hang
+   your knight" advice, an advanced player gets prophylaxis and pawn breaks.
+   Also picked up live.
 
 ## Chess Coach
 
@@ -71,6 +76,15 @@ when Stockfish coaching is off.
 lines filtered to the side you play — Italian Game, Ruy Lopez, London System,
 Sicilian, French, Caro-Kann, King's Indian…). Choosing one guides you along that
 line move by move.
+
+### Position themes (concept spotlight)
+
+Below the suggestions the panel labels the position's **structural themes** —
+open files, isolated/doubled/backward/passed pawns, outposts, opposite-side
+castling — computed directly from the board (no engine or AI call, so it's
+instant and always right). It's the same structural read that grounds the AI
+plan, surfaced so each position doubles as a lesson in *what to look for*, not
+just *which move to play*.
 
 ### Move grading (after you move)
 

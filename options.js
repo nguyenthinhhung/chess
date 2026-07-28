@@ -107,3 +107,16 @@ for (const radio of [langEn, langVi]) {
     if (radio.checked) chrome.storage.local.set({ ccLanguage: radio.value });
   });
 }
+
+// Skill level — a profile setting picked up live by the content script (like
+// language). Saved immediately on change; no explicit Save button.
+const skillLevel = $('skillLevel');
+const SKILLS = ['beginner', 'intermediate', 'advanced'];
+
+chrome.storage.local.get('ccSkillLevel', (state) => {
+  skillLevel.value = SKILLS.includes(state.ccSkillLevel) ? state.ccSkillLevel : 'intermediate';
+});
+
+skillLevel.addEventListener('change', () => {
+  chrome.storage.local.set({ ccSkillLevel: skillLevel.value });
+});

@@ -46,6 +46,11 @@ test('cacheKeyFor separates review (played move known) from live, and by coached
   assert.notEqual(cacheKeyFor({ ...data, userSide: 'w' }), cacheKeyFor({ ...data, userSide: 'b' }));
 });
 
+test('cacheKeyFor separates by skill level so a beginner never gets an advanced answer', () => {
+  const data = { fen: 'startfen', bestMove: 'e2e4', depth: 14 };
+  assert.notEqual(cacheKeyFor({ ...data, skill: 'beginner' }), cacheKeyFor({ ...data, skill: 'advanced' }));
+});
+
 test('buildExplainPrompt embeds FEN, best move, and top moves', () => {
   const { system, user } = buildExplainPrompt({
     fen: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1',
@@ -175,6 +180,22 @@ test('buildExplainPrompt asks for a transferable principle', () => {
   const { system } = buildExplainPrompt({ ...BASE });
   assert.match(system, /"principle":/);
   assert.match(system, /transferable chess maxim/);
+});
+
+test('buildExplainPrompt pitches the register at the skill level', () => {
+  const beginner = buildExplainPrompt({ ...BASE, skill: 'beginner' }).system;
+  assert.match(beginner, /beginner \(~600–900 Elo\)/);
+  assert.match(beginner, /avoid chess jargon/);
+  assert.doesNotMatch(beginner, /prophylaxis/);
+
+  const advanced = buildExplainPrompt({ ...BASE, skill: 'advanced' }).system;
+  assert.match(advanced, /advanced player \(~1500–2000 Elo\)/);
+  assert.match(advanced, /prophylaxis/);
+
+  // No skill given → the intermediate default, never the old fixed "~1200".
+  const dflt = buildExplainPrompt({ ...BASE }).system;
+  assert.match(dflt, /intermediate club player \(~1000–1400 Elo\)/);
+  assert.doesNotMatch(dflt, /~1200-Elo/);
 });
 
 test('plan themes are filtered to what the Position facts support', () => {

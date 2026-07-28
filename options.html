@@ -125,6 +125,18 @@
   <label class="checkbox-row"><input type="radio" name="lang" id="langEn" value="en">English</label>
   <label class="checkbox-row"><input type="radio" name="lang" id="langVi" value="vi">Tiếng Việt</label>
 
+  <hr style="margin: 32px 0; border: 0; border-top: 1px solid #eee;">
+
+  <h1>Skill level</h1>
+  <p class="sub">Who the AI move explanations are written for. The engine analysis is the same at every level &mdash; only the wording and the depth of the ideas change: a beginner gets plain "don't hang your knight" advice, an advanced player gets prophylaxis and pawn breaks.</p>
+
+  <label for="skillLevel">Explanations pitched for</label>
+  <select id="skillLevel">
+    <option value="beginner">Beginner (~600–900)</option>
+    <option value="intermediate">Intermediate (~1000–1400)</option>
+    <option value="advanced">Advanced (~1500–2000)</option>
+  </select>
+
   <script src="ai/providers.js"></script>
   <script src="options.js"></script>
 </body>
