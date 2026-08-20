@@ -37,11 +37,10 @@ Open the extension icon → **Settings** (the options page):
 
 1. **Lichess API token** (for import) — create one at
    <https://lichess.org/account/oauth/token/create> (no scopes needed) and paste it.
-2. **AI Coach** *(optional)* — pick a provider (**Gemini** or **Groq**), paste its
+2. **AI Coach** *(optional)* — pick a provider (**Gemini**), paste its
    API key, and optionally override the model. Keys and models are stored
-   per-provider, so switching back and forth keeps both.
+   per-provider, so switching providers keeps each one's settings.
    - Gemini: free key at <https://aistudio.google.com/app/apikey> (default model `gemini-2.5-flash`)
-   - Groq: free key at <https://console.groq.com/keys> (default model `llama-3.3-70b-versatile`)
    - Without a key, the coach still works fully — you just won't get the AI
      "Explain this move" panel (the built-in explanations remain).
 3. **Language** — English or Tiếng Việt. Applies to the coach panel **and** both
@@ -197,12 +196,12 @@ progress.
 | `chess-coach.js` | Coach UI: under-board bar, bottom-right panel, board arrows, grading, settings |
 | `chess-coach-bridge.js` | MAIN-world bridge: reads the live move list |
 | `background.js` | Service worker: Lichess client, engine offscreen relay, AI relay + cache |
-| `ai/providers.js` | AI provider catalog (Gemini, Groq) — auth style, default model, key URL |
+| `ai/providers.js` | AI provider catalog (Gemini) — auth style, default model, key URL |
 | `ai/prompt-builder.js` | Builds the explain prompt + JSON schema, strategy-theme gating |
 | `ai/position-facts.js` | Computes structural facts (material, files, weak pawns, outposts) from a FEN |
 | `ai/ai-service.js` | Dispatches an explain request to the configured provider |
 | `ai/gemini-service.js` | Gemini native API client |
-| `ai/openai-compatible-service.js` | OpenAI-compatible client (Groq) |
+| `ai/openai-compatible-service.js` | Generic OpenAI-chat-completions client (for future providers) |
 | `ai/response-parser.js` | Parses/validates the model's JSON answer |
 | `i18n.js` | All UI strings, English + Tiếng Việt |
 | `popup.html/js` | Toolbar popup for batch + paste import |

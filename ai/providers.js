@@ -13,14 +13,6 @@ const AI_PROVIDERS = {
     model: 'gemini-2.5-flash',
     keyUrl: 'https://aistudio.google.com/app/apikey',
     keyPlaceholder: 'AIza...'
-  },
-  groq: {
-    label: 'Groq',
-    providerType: 'openai_compatible',
-    baseUrl: 'https://api.groq.com/openai/v1',
-    model: 'llama-3.3-70b-versatile',
-    keyUrl: 'https://console.groq.com/keys',
-    keyPlaceholder: 'gsk_...'
   }
 };
 

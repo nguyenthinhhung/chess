@@ -3,6 +3,16 @@ const assert = require('node:assert/strict');
 const { explainMove } = require('../ai/ai-service.js');
 const { AI_PROVIDERS, DEFAULT_AI_PROVIDER } = require('../ai/providers.js');
 
+// No shipped provider is OpenAI-compatible right now (Groq was dropped), so
+// the router's openai_compatible branch is exercised with a test-only entry.
+const TEST_OC_PROVIDER = 'test-openai-compatible';
+AI_PROVIDERS[TEST_OC_PROVIDER] = {
+  label: 'Test OpenAI-compatible',
+  providerType: 'openai_compatible',
+  baseUrl: 'https://api.example.com/v1',
+  model: 'test-model'
+};
+
 const data = { fen: 'fen', bestMove: 'e2e4', depth: 16, eval: { type: 'cp', value: 40 }, pv: ['e2e4'], topMoves: [] };
 
 test('defaults to Gemini when no provider (or an unknown one) is given', () => {
@@ -21,15 +31,15 @@ test('routes gemini_native providers to the Gemini generateContent endpoint', as
   assert.equal(result.whyBest, 'w');
 });
 
-test('routes openai_compatible providers (Groq) to their chat/completions endpoint', async () => {
+test('routes openai_compatible providers to their chat/completions endpoint', async () => {
   let seenUrl;
   const fetchImpl = async (url) => {
     seenUrl = url;
     const reply = { whyBest: 'w', plan: 'p', opponentReply: 'r' };
     return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify(reply) } }] }) };
   };
-  const result = await explainMove(data, { apiKey: 'gsk_test', provider: 'groq', fetchImpl });
-  assert.equal(seenUrl, `${AI_PROVIDERS.groq.baseUrl}/chat/completions`);
+  const result = await explainMove(data, { apiKey: 'k', provider: TEST_OC_PROVIDER, fetchImpl });
+  assert.equal(seenUrl, `${AI_PROVIDERS[TEST_OC_PROVIDER].baseUrl}/chat/completions`);
   assert.equal(result.whyBest, 'w');
 });
 
@@ -49,6 +59,6 @@ test('an explicit model overrides the provider default', async () => {
     seenBody = JSON.parse(opts.body);
     return { ok: true, json: async () => ({ choices: [{ message: { content: '{}' } }] }) };
   };
-  await explainMove(data, { apiKey: 'k', provider: 'groq', model: 'some-other-model', fetchImpl });
+  await explainMove(data, { apiKey: 'k', provider: TEST_OC_PROVIDER, model: 'some-other-model', fetchImpl });
   assert.equal(seenBody.model, 'some-other-model');
 });

@@ -1,5 +1,5 @@
 // ai/openai-compatible-service.js — calls any OpenAI-chat-completions-shaped
-// API (Groq, etc.) and returns the same validated explanation shape as
+// API and returns the same validated explanation shape as
 // gemini-service.js. Runs in the background service worker (loaded via
 // importScripts, after prompt-builder.js and response-parser.js) or under the
 // Node test runner with an injected fetchImpl. Never runs in a content

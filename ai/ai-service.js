@@ -1,5 +1,5 @@
 // ai/ai-service.js — picks the right provider implementation (Gemini's native
-// API, or an OpenAI-chat-completions-shaped one like Groq) based on the
+// API, or an OpenAI-chat-completions-shaped one) based on the
 // user's provider setting, and calls it. Runs in the background service
 // worker (loaded via importScripts, after providers.js, gemini-service.js,
 // and openai-compatible-service.js) or under the Node test runner.
