@@ -61,6 +61,19 @@
   // is capped here regardless of the user's depth setting.
   const REPLY_DEPTH = 10;
 
+  // Threats-only display: the "what can they do to me?" probe is a null-move
+  // search — one ply of intent — so it is capped like the reply search above.
+  // THREAT_MIN_CP is the alarm bar: handing the opponent a free move is worth a
+  // tempo or two by itself, so only a swing clearly bigger than that is a real
+  // threat. Set high on purpose — a mode that cries wolf every move teaches you
+  // to ignore it, which is the opposite of staying alert.
+  const THREAT_DEPTH = 12;
+  const THREAT_MIN_CP = 150;
+  // Danger palette, worst first — deliberately unlike the rank colours, since
+  // these arrows are the opponent's plans, not moves you should play.
+  const THREAT_COLORS = ['#e02424', '#f0663c', '#f0a13c'];
+  const threatColor = (i) => THREAT_COLORS[Math.min(i, THREAT_COLORS.length - 1)];
+
   // Neutral Hint mode: one flat colour for every equivalent candidate — no
   // rank implied. Threshold is in centipawns (0.10-0.30 pawns per the spec).
   const NEUTRAL_COLOR = '#8a8a86';
@@ -130,12 +143,17 @@
     const tag = `<span class="cc-side-tag" title="${esc(side === 'w' ? t('sideWhite') : t('sideBlack'))}"><i class="cc-dot cc-dot-${side}"></i></span>`;
     return `<div class="cc-side-line${opts.dim ? ' cc-dim' : ''}">${tag}${items}</div>`;
   }
-  const legend = () => [
+  const legend = () => (state.displayLevel === 'threats' ? [
+    // Threats-only shows nothing of your own — a Best/2nd/3rd key would be
+    // describing arrows that aren't on the board.
+    { color: BOOK_COLOR, label: t('legendBook') },
+    { color: THREAT_COLORS[0], label: t('legendThreat') }
+  ] : [
     { color: BOOK_COLOR, label: t('legendBook') },
     { color: RANK_COLORS[0], label: t('legendBest') },
     { color: RANK_COLORS[1], label: t('legend2nd') },
     { color: RANK_COLORS[2], label: t('legend3rd') }
-  ];
+  ]);
 
   // enabled: the lightbulb toggle. depth: Stockfish search depth. openingId: a
   // POPULAR name to train, or null = auto-detect. hintInterval: '1'|'2'|'3'|'5'|
@@ -153,9 +171,11 @@
     neutralThreshold: NEUTRAL_THRESHOLD_DEFAULT,
     settingsOpen: false, // advanced settings (depth/arrows/threshold) collapsed by default
     // displayLevel: 'full' (arrows+eval+notation, today's behaviour), 'hint'
-    // (a dot on the square of the piece to move — no path/eval/notation), or
-    // 'hidden' (Stockfish doesn't run at all while it's your move). Only ever
-    // restricts YOUR OWN pending decision — unaffected when it's not your turn.
+    // (a dot on the square of the piece to move — no path/eval/notation),
+    // 'hidden' (Stockfish doesn't run at all while it's your move), or
+    // 'threats' (your own suggestion is withheld and the board instead shows
+    // only what the OPPONENT is threatening). Only ever restricts YOUR OWN
+    // pending decision — unaffected when it's not your turn.
     displayLevel: 'full'
   };
   let lastSig = '';
@@ -288,6 +308,19 @@
     if (manualFullFens.has(view.fen)) return false;
     if (state.displayLevel === 'hint') return true;
     return state.displayLevel === 'hidden' && manualHintFens.has(view.fen);
+  }
+
+  // Display level "Threats only": the engine's answer FOR YOU is withheld and
+  // the board shows only the opponent's dangerous moves, so you have to spot
+  // the danger yourself and then find your own reply to it.
+  // Scoped to your own move on purpose: once it's the opponent's turn the panel
+  // is grading the move you just played, which is feedback, not a hint — and
+  // their candidate moves are already on screen there anyway.
+  function isThreatsDisplay(view) {
+    if (state.displayLevel !== 'threats') return false;
+    if (manualFullFens.has(view.fen)) return false; // "Show full arrows" escalates this one position
+    const userSide = mapSide(bridgePlayingAs) || detectUserSide() || 'w';
+    return view.pos.turn === userSide;
   }
 
   // Called once per graded user move (see runEngine's review branch). Feeds the
@@ -559,7 +592,14 @@
   // ---- engine (continuous, bot/analysis only) --------------------------------
   // Keyed by the position's FEN (not the move order) — transpositions share one
   // search, and the FEN-fallback view (see buildView) needs no move list at all.
-  function curSig(view) { return state.depth + ':' + state.arrows + '@' + view.fen; }
+  // The threat flag is part of the signature because Threats-only spends the
+  // second search differently (null move instead of the reply search) — switching
+  // into or out of it must invalidate the cached result and re-run, or the panel
+  // would sit on a result that has no threat list in it.
+  function curSig(view) {
+    const th = state.displayLevel === 'threats' ? ':t' : '';
+    return state.depth + ':' + state.arrows + th + '@' + view.fen;
+  }
 
   function maybeAnalyze(view) {
     if (engineDead || !engineAvailable() || !Explain) return;
@@ -593,7 +633,10 @@
       // while a second search runs. The reply arrows stream in afterwards.
       engineState.result = {
         lines: r.lines || [], pv: r.pv || [], score: r.score, pos, sideToMove: pos.turn,
-        replyLines: [], replyPos: null
+        replyLines: [], replyPos: null,
+        // Threats-only display: filled by the null-move search below.
+        //   { status: 'done' | 'check' | 'error', list: [...] }, null while it runs.
+        threats: null
       };
       engineState.status = 'done';
       lastSig = '';
@@ -644,6 +687,34 @@
             }
           }
         } catch {} // the review is optional — keep the published main result
+      } else if (state.displayLevel === 'threats' && pos.turn === userSide && !pendingView) {
+        // Threats-only: spend the second search on the opponent's plans against
+        // the position AS IT STANDS (a null move — see Explain.nullPosition),
+        // not on their replies to a move you haven't played. Same budget as the
+        // reply search it replaces, and it's the only search this mode renders.
+        const nullPos = Explain.nullPosition(pos);
+        if (!nullPos) {
+          // You're in check: passing isn't a position Stockfish can be handed,
+          // and the check is the threat — say that instead of searching.
+          engineState.result.threats = { status: 'check', list: [] };
+        } else {
+          try {
+            const rt = await engineGo(toFen(nullPos), { depth: Math.min(state.depth, THREAT_DEPTH), multipv: state.arrows });
+            if (engineState.sig !== sig) return;
+            // r.score is the eval with YOU to move, from your own point of view
+            // (pos.turn is your side) — exactly the baseline a threat is measured against.
+            engineState.result.threats = {
+              status: 'done',
+              list: Explain.describeThreats(nullPos, rt.lines || [], Explain.scoreToCp(r.score),
+                { minCp: THREAT_MIN_CP, max: state.arrows, lang: state.lang })
+            };
+          } catch {
+            if (engineState.sig !== sig) return;
+            engineState.result.threats = { status: 'error', list: [] };
+          }
+        }
+        lastSig = '';
+        render(detectContext());
       } else if (best && best.move && !pendingView) {
         // Second search: the other side's top replies AFTER the best move, so the
         // opponent gets candidate arrows too (symmetric with yours). Skipped when
@@ -869,6 +940,16 @@
     const bm = view.synced ? bookMove(view.uci, opening) : null;
     if (bm) arrows.push({ uci: bm, color: BOOK_COLOR });
 
+    // Display level "Threats only": the board carries the opponent's dangerous
+    // moves and nothing of yours. Deliberately NOT gated by the hint interval —
+    // a warning about what they can do isn't the answer to your move, so a
+    // "Manual only" interval and this mode compose into pure alertness training.
+    if (isThreatsDisplay(view)) {
+      const list = (haveEngine && engineState.result.threats && engineState.result.threats.list) || [];
+      list.forEach((th, i) => arrows.push({ uci: th.move, color: threatColor(i), threat: true }));
+      return arrows;
+    }
+
     // Hint interval: while it's the user's own move and no hint is due/revealed,
     // hintVisible is false and every engine-derived arrow (including the
     // opponent's hypothetical replies) stays hidden — only the book arrow shows.
@@ -994,7 +1075,10 @@
       if (ff < 0 || ff > 7 || tf < 0 || tf > 7 || !(fr >= 1 && fr <= 8) || !(tr >= 1 && tr <= 8)) continue;
       const A = squareCentre(ff, fr, flipped), B = squareCentre(tf, tr, flipped);
       const poly = arrowPolygon(A, B);
-      const op = a.dim ? 0.38 : 0.62;
+      // Threat arrows are the only thing on the board in their mode, and they
+      // are a warning rather than a recommendation — drawn stronger than a
+      // suggestion arrow so they register at a glance.
+      const op = a.threat ? 0.78 : (a.dim ? 0.38 : 0.62);
       // Neutral Hint arrows all share one flat colour, so a shorter one lying
       // exactly inside a longer, same-coloured one (e.g. e3 inside e2-e4)
       // would otherwise be invisible — a brighter white outline keeps its
@@ -1070,6 +1154,39 @@
     return `<select class="cc-select" data-cc-opening>${opts}</select>`;
   }
 
+  // Display level "Threats only": the panel's whole forward view while it's your
+  // move — what the opponent is threatening and why, and nothing about what you
+  // should play. Each threat names its own danger (mate / the piece it takes /
+  // the tactic it sets up) so the warning teaches the pattern, not just the square.
+  function threatsHtml(res) {
+    const escalate = `<button class="cc-explain-btn" data-act="showfull">${esc(t('showFull'))}</button>`;
+    const th = res && res.threats;
+    if (!th) {
+      return `<div class="cc-hint-hidden"><span class="cc-chip cc-info">${esc(t('threatsAnalysing'))}</span></div>`;
+    }
+    if (th.status === 'check') {
+      return `<div class="cc-hint-hidden"><span class="cc-chip cc-threat-alarm">${esc(t('threatsInCheck'))}</span>${escalate}</div>`;
+    }
+    if (th.status === 'error') {
+      return `<div class="cc-hint-hidden"><span class="cc-chip cc-info">${esc(t('threatsFailed'))}</span>${escalate}</div>`;
+    }
+    if (!th.list.length) {
+      // Nothing above the alarm bar. Said plainly — "no threat" is real
+      // information here, not an empty state.
+      return `<div class="cc-hint-hidden"><span class="cc-chip cc-threat-clear">${esc(t('threatsNone'))}</span>${escalate}</div>`;
+    }
+    const rows = th.list.map((x) => {
+      // How much letting it happen costs you: a mate count, or the eval swing.
+      const cost = x.mateIn ? `M${x.mateIn}` : '−' + (x.lossCp / 100).toFixed(2);
+      const motifs = (x.motifs || []).map((m) => `<span class="cc-motif-chip">${esc(t(m))}</span>`).join('');
+      return `<div class="cc-threat-row"><span class="cc-threat-move">${esc(x.san)}</span>` +
+        `<span class="cc-threat-cost">${esc(cost)}</span>` +
+        `<span class="cc-threat-why">${esc(x.text)}</span>${motifs}</div>`;
+    }).join('');
+    return `<div class="cc-threats"><b>${esc(t('threatsLabel'))}</b>${rows}</div>` +
+      `<div class="cc-hint-hidden"><span class="cc-erow">${esc(t('threatsHiddenMsg'))}</span>${escalate}</div>`;
+  }
+
   // Compact, inline result chips for the single-line layout.
   function resultsHtml(view, hintVisible) {
     const sideToMove = view.pos.turn;
@@ -1108,6 +1225,13 @@
     }
 
     const res = engineState.result;
+
+    // Display level "Threats only". Checked BEFORE the hint-interval gate below
+    // on purpose: a threat warning isn't the suggestion the interval withholds,
+    // so the two settings compose instead of one silencing the other.
+    if (isThreatsDisplay(view)) {
+      return chips + threatsHtml(res);
+    }
 
     // Hint interval: it's the user's own move to make and no hint is due or
     // manually revealed yet — hide every engine-derived suggestion (book arrow
@@ -1287,6 +1411,7 @@
         <option value="full"${state.displayLevel === 'full' ? ' selected' : ''}>${esc(t('displayFull'))}</option>
         <option value="hint"${state.displayLevel === 'hint' ? ' selected' : ''}>${esc(t('displayHint'))}</option>
         <option value="hidden"${state.displayLevel === 'hidden' ? ' selected' : ''}>${esc(t('displayHidden'))}</option>
+        <option value="threats"${state.displayLevel === 'threats' ? ' selected' : ''}>${esc(t('displayThreats'))}</option>
       </select></label>`;
 
     // Advanced: tuning knobs you set once and rarely revisit.
@@ -1430,7 +1555,7 @@
         try {
           const r = await engineGo(view.fen, { depth: state.depth, multipv: state.arrows });
           if (curSig(view) !== sig) return; // position changed while we were searching
-          res = { lines: r.lines || [], pv: r.pv || [], score: r.score, pos: view.pos, sideToMove: view.pos.turn, replyLines: [], replyPos: null };
+          res = { lines: r.lines || [], pv: r.pv || [], score: r.score, pos: view.pos, sideToMove: view.pos.turn, replyLines: [], replyPos: null, threats: null };
           engineState.sig = sig;
           engineState.status = 'done';
           engineState.result = res;
@@ -1524,14 +1649,17 @@
 
     const displaySel = el.querySelector('[data-cc-displaylevel]');
     if (displaySel) displaySel.addEventListener('change', () => {
-      state.displayLevel = ['full', 'hint', 'hidden'].includes(displaySel.value) ? displaySel.value : 'full';
+      state.displayLevel = ['full', 'hint', 'hidden', 'threats'].includes(displaySel.value) ? displaySel.value : 'full';
       save();
-      // No need to invalidate engineState.sig: switching levels never changes
-      // depth/multipv, so any already-computed result is still valid data —
-      // only how it's RENDERED changes. Switching to Hidden hides it from view
-      // immediately (see resultsHtml); switching away from Hidden naturally
+      // No need to invalidate engineState.sig by hand: switching levels never
+      // changes depth/multipv, so any already-computed result is still valid
+      // data — only how it's RENDERED changes. Switching to Hidden hides it from
+      // view immediately (see resultsHtml); switching away from Hidden naturally
       // triggers a fresh search on its own, since maybeAnalyze only skipped it
       // in the first place because no result existed yet for this position.
+      // Threats-only is the one level that DOES need a re-run — it spends the
+      // second search differently — and it invalidates itself, via the flag
+      // curSig carries for it.
       lastSig = '';
       render(detectContext());
     });
@@ -1625,7 +1753,7 @@
       state.suggestionStyle = o.ccSuggestionStyle === 'neutral' ? 'neutral' : 'best';
       state.neutralThreshold = Math.max(NEUTRAL_THRESHOLD_MIN, Math.min(NEUTRAL_THRESHOLD_MAX, o.ccNeutralThreshold || NEUTRAL_THRESHOLD_DEFAULT));
       state.settingsOpen = !!o.ccSettingsOpen;
-      state.displayLevel = ['full', 'hint', 'hidden'].includes(o.ccDisplayLevel) ? o.ccDisplayLevel : 'full';
+      state.displayLevel = ['full', 'hint', 'hidden', 'threats'].includes(o.ccDisplayLevel) ? o.ccDisplayLevel : 'full';
       start();
     });
     // Language and skill level live on the options page, a separate context —

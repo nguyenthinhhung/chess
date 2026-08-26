@@ -70,8 +70,10 @@ When coaching is on it draws arrows straight on the board:
   recommendation there; the engine arrows are the alternatives.
 - **Opponent's likely replies** (dimmed) taken from Stockfish's principal
   variation, so you can read their intention.
+- **Opponent's threats** (red) in *Threats only* display — see below.
 
-A legend in the panel maps the colours (Book / Best / 2nd / 3rd).
+A legend in the panel maps the colours (Book / Best / 2nd / 3rd, or Book /
+Threat in *Threats only*).
 
 ### Opening recognition & book moves
 
@@ -95,6 +97,51 @@ castling — computed directly from the board (no engine or AI call, so it's
 instant and always right). It's the same structural read that grounds the AI
 plan, surfaced so each position doubles as a lesson in *what to look for*, not
 just *which move to play*.
+
+### Threat awareness (*Threats only* display)
+
+Set **Display** to **⚠ Threats only** and the coach stops answering your
+position and starts warning you about theirs: while it's your move it shows
+**nothing of your own** — no best move, no candidate arrows, no eval — and
+instead draws, in red, only the opponent's **dangerous** moves.
+
+Those come from a **null-move search**: Stockfish is handed the same position
+with the turn given away, as if you had passed. Its top lines are therefore the
+opponent's plans against the board *as it stands* — not their replies to a move
+you haven't chosen yet, which is what "danger" actually means before you move.
+It costs no extra search: this probe replaces the opponent-reply search that
+Full display would have run.
+
+Each threat is listed with what it costs you and *why* it hurts — the mate, the
+piece it takes, the check, plus any tactic (fork / pin / discovered check) named
+by the same geometry the move review uses:
+
+```
+⚠ They threaten
+  Nxe5   −3.10   captures the knight
+  Qh4+   −1.90   wins a decisive advantage with check   [fork]
+```
+
+Deliberately quiet: a move only counts as a threat when allowing it would cost
+you **at least 1.5 pawns** against the current evaluation. Handing over a free
+move is worth a tempo or two by itself, so smaller swings are noise — and a mode
+that cries wolf every move teaches you to ignore it. When nothing clears the
+bar it says so plainly (*"No serious threat right now"*), which is real
+information, not an empty state. If you're already in check it says that instead
+— you have to answer that first, and there's no "pass" to reason from.
+
+Two things it composes with rather than fights:
+
+- **Hint interval** doesn't gate it. A warning about what *they* can do isn't
+  the suggestion an interval withholds, so *Threats only* + *Manual hints* is
+  pure alertness training: you get told the danger and still have to find the
+  answer yourself.
+- **Show full arrows** escalates the position you're stuck on all the way to
+  Full detail, without changing the standing setting — and **✨ Explain this
+  move** still works, so the ladder out is always there.
+
+Once you've moved, the mode gets out of the way: the panel goes back to grading
+the move you just played, because that's feedback, not a hint.
 
 ### Move grading (after you move)
 
@@ -142,7 +189,7 @@ Quick settings (always visible):
 | **Opening** | Auto-detect or ~30 named lines | Auto-detect | Which opening to be guided along |
 | **Suggestions** | Best move / Neutral hints | Best move | *Neutral* shows a flat-coloured set of engine-equivalent moves (within a threshold) without revealing the single best pick until after you move |
 | **Hint interval** | Every move / Every 2·3·5·10 / Manual / Adaptive | Every move | How often suggestions appear on your turn. *Adaptive* proposes raising the interval after a run of strong moves (never changes it silently) |
-| **Display** | Full / Hint / Hidden | Full | *Full* = arrows + evals; *Hint* = just a dot on the piece to move; *Hidden* = nothing until you ask |
+| **Display** | Full / Hint / Hidden / ⚠ Threats only | Full | *Full* = arrows + evals; *Hint* = just a dot on the piece to move; *Hidden* = nothing until you ask; *Threats only* = none of your own moves, just the opponent's dangerous ones (see above) |
 
 Advanced settings (behind ⚙):
 
@@ -188,7 +235,7 @@ progress.
 | `pgn.js` | Pure TCN→UCI→SAN→PGN conversion (shared with tests) |
 | `chesscore.js` | Minimal chess engine (apply SAN/UCI, FEN) used by the coach |
 | `openings.json` | ECO opening database (UCI line → name), fetched on demand |
-| `explain.js` | Turns an engine eval into a short, grounded explanation + move grading |
+| `explain.js` | Turns an engine eval into a short, grounded explanation + move grading + threat detection |
 | `ply-view.js` | Resolves which prefix of the move list is on screen while scrubbing |
 | `engine.js` | Stockfish 18 (WASM) worker wrapper — UCI, MultiPV searches |
 | `offscreen.html/js` | Offscreen document that hosts the engine (page-CSP-free) |

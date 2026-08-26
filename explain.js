@@ -277,10 +277,75 @@ function detectMotifs(pos, uci) {
   return [...new Set(motifs)].slice(0, 2);
 }
 
+// ---- threats (the "Threats only" display level) ------------------------------
+// The same position with the move handed to the other side — a null move, as if
+// you had passed. Castling rights survive; en passant does not (it expires the
+// moment it isn't taken). Returns null when the side to move is IN CHECK: then
+// passing isn't even a legal construct to reason about, and the check itself is
+// the only threat worth naming.
+function nullPosition(pos) {
+  if (!pos || _kingInCheck(pos.board, pos.turn)) return null;
+  const p = clonePos(pos);
+  p.turn = pos.turn === 'w' ? 'b' : 'w';
+  p.ep = -1;
+  return p;
+}
+
+// Which of the opponent's moves are worth WARNING about, from a search on the
+// null position above. Because that search starts from the board as it stands,
+// its lines are the opponent's plans against your CURRENT setup — not replies to
+// a move you haven't chosen yet, which is what "danger" means before you move.
+//
+//   pos         the null position (opponent to move); not mutated
+//   lines       that search's MultiPV lines, scores from the OPPONENT's POV
+//   baselineCp  the real eval with YOU to move, from YOUR point of view
+//
+// A line only counts as a threat when allowing it would cost you at least
+// `minCp` against that baseline: handing over the move is worth a tempo or two
+// by itself, so a small drop means nothing and warning about it is pure noise.
+// Returns [{ move, san, lossCp, mateIn, text, motifs }], worst first.
+function describeThreats(pos, lines, baselineCp, opts = {}) {
+  const { minCp = 150, max = 3, lang = 'en' } = opts;
+  const t = (key, ...args) => _eI18n.t(lang, key, ...args);
+  const out = [];
+  for (const ln of lines || []) {
+    if (!ln || !ln.move || !ln.score) continue;
+    const mateIn = ln.score.type === 'mate' && ln.score.value > 0 ? ln.score.value : null;
+    // scoreToCp(ln.score) is the opponent's POV; negate to get yours. Clamped
+    // because either side of that subtraction may be a mate score, which
+    // scoreToCp deliberately collapses onto a huge number — past ~20 pawns the
+    // figure has stopped meaning anything except "catastrophic", and printing
+    // "−1004.98" would just look broken.
+    const lossCp = Math.min(baselineCp - (-scoreToCp(ln.score)), 2000);
+    if (!mateIn && lossCp < minCp) continue;
+    const f = moveFacts(pos, ln.move);
+    if (!f) continue;
+    // Why it hurts, in that order of alarm: mate, then material, then "this
+    // just wins" for a positional crush the board facts can't name.
+    const bits = [];
+    if (mateIn) bits.push(t('forcesMateIn', mateIn));
+    else if (f.captured) bits.push(t('capturesThe', pieceName(f.captured, lang)));
+    else bits.push(t('threatWinsAdvantage'));
+    if (f.givesCheck && !mateIn) bits.push(t('withCheck'));
+    out.push({
+      move: ln.move,
+      san: f.san + (f.givesCheck ? '+' : ''),
+      lossCp, mateIn,
+      text: bits.join(' '),
+      motifs: detectMotifs(pos, ln.move)
+    });
+  }
+  // Mate outranks any centipawn swing; otherwise the biggest loss first.
+  const rank = (x) => (x.mateIn ? 1e9 - x.mateIn : x.lossCp);
+  out.sort((a, b) => rank(b) - rank(a));
+  return out.slice(0, max);
+}
+
 const _eExports = {
   pieceName, formatScore, scoreToCp, classify,
   attacks: _attacks, kingInCheck: _kingInCheck,
-  moveFacts, explainBest, explainPlayed, sanOf, detectMotifs
+  moveFacts, explainBest, explainPlayed, sanOf, detectMotifs,
+  nullPosition, describeThreats
 };
 if (_eIsNode) {
   module.exports = _eExports;

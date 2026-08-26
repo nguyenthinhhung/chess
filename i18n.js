@@ -56,6 +56,14 @@ const STRINGS = {
     displayFull: 'Full',
     displayHint: 'Hint',
     displayHidden: 'Hidden',
+    displayThreats: '⚠ Threats only',
+    threatsLabel: '⚠ They threaten',
+    threatsAnalysing: 'Checking their threats…',
+    threatsNone: '✅ No serious threat right now.',
+    threatsInCheck: '⚠ You are in check — deal with that first.',
+    threatsFailed: '⚠ Threat check failed',
+    threatsHiddenMsg: 'Your own best move is hidden — find it yourself.',
+    legendThreat: 'Threat',
     engineHiddenMsg: 'Hidden — Stockfish is off for your move.',
     hintDotMsg: 'A dot marks the piece to move on the board.',
     thinkItThrough: 'Think it through first…',
@@ -102,7 +110,8 @@ const STRINGS = {
     solidInLine: 'Solid — right in line with the engine.',
     dropsThe: 'Drops the %s — the opponent can answer %s.',
     enginePrefersTougher: 'The engine prefers %s; %s is the tougher reply.',
-    enginePrefers: 'The engine prefers %s.'
+    enginePrefers: 'The engine prefers %s.',
+    threatWinsAdvantage: 'wins a decisive advantage'
   },
   vi: {
     turnCoachingOff: 'Tắt huấn luyện',
@@ -152,6 +161,14 @@ const STRINGS = {
     displayFull: 'Đầy đủ',
     displayHint: 'Gợi ý',
     displayHidden: 'Ẩn',
+    displayThreats: '⚠ Chỉ mối đe dọa',
+    threatsLabel: '⚠ Đối thủ đang dọa',
+    threatsAnalysing: 'Đang dò các mối đe dọa…',
+    threatsNone: '✅ Hiện chưa có đe dọa nghiêm trọng.',
+    threatsInCheck: '⚠ Bạn đang bị chiếu — xử lý việc đó trước đã.',
+    threatsFailed: '⚠ Không dò được mối đe dọa',
+    threatsHiddenMsg: 'Nước tốt nhất của bạn đang được giấu — hãy tự tìm.',
+    legendThreat: 'Đe dọa',
     engineHiddenMsg: 'Ẩn — Stockfish không chạy ở lượt của bạn.',
     hintDotMsg: 'Có 1 chấm đánh dấu quân nên đi trên bàn cờ.',
     thinkItThrough: 'Hãy tự suy nghĩ trước…',
@@ -198,7 +215,8 @@ const STRINGS = {
     solidInLine: 'Vững chắc — đúng như máy tính đề xuất.',
     dropsThe: 'Để mất %s — đối thủ có thể đáp trả bằng %s.',
     enginePrefersTougher: 'Máy tính ưu tiên %s; %s là câu trả lời khó chịu hơn.',
-    enginePrefers: 'Máy tính ưu tiên %s.'
+    enginePrefers: 'Máy tính ưu tiên %s.',
+    threatWinsAdvantage: 'giành lợi thế quyết định'
   }
 };
 

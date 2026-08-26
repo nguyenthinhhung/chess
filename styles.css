@@ -342,6 +342,25 @@
   white-space: nowrap;
 }
 
+/* Display level "Threats only" — the opponent's dangerous moves, one per row.
+   Red-tinted throughout so the mode never reads like a set of suggestions. */
+.cc-threats { display: flex; flex-direction: column; gap: 4px; }
+.cc-threats > b { color: #e89089; }
+.cc-threat-row { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 7px; }
+.cc-threat-move { font-weight: 700; color: #e8776b; white-space: nowrap; }
+.cc-threat-cost {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  color: #e89089;
+  background: rgba(208, 70, 59, 0.20);
+  white-space: nowrap;
+}
+.cc-threat-why { color: #cfcdc9; }
+/* The two "nothing to draw" states: a live alarm, and the all-clear. */
+.cc-threat-alarm { color: #e89089; background: rgba(208, 70, 59, 0.20); }
+.cc-threat-clear { color: #b6d36b; background: rgba(118, 153, 0, 0.16); }
+
 /* The principal variation, one narrated move per line. */
 .cc-lsteps { display: flex; flex-direction: column; gap: 2px; margin-top: 2px; }
 .cc-lstep { padding-left: 10px; text-indent: -10px; color: #cfcdc9; }
